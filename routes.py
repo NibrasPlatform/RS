@@ -4,8 +4,8 @@ import os
 
 from flask import Blueprint, jsonify, request
 
-from inference import recommend, rerank_with_community
-from llm_scorer import get_community_scores
+from inference import recommend, soft_vote, rerank_with_community
+from llm_scorer import get_llm_track_scores, get_community_scores
 from mapper import (
     COURSE_CAPABILITY_WEIGHTS,
     add_course_to_weights,
@@ -27,8 +27,14 @@ def recommend_api():
     or:
       { "capabilities": {"Math": 0.9, ...} }
 
-    Optional fields:
-      "top_comment": str   — free-text community signal for reranking
+    Optional LLM signal fields (any combination):
+      "top_comment":          str              — community comment text
+      "correct_answers":      [str, ...]       — correct quiz answer strings
+      "problem_type_ranks":   {"Graph": 120}   — problem type → count/rank
+
+    Optional tuning:
+      "ml_weight":  float (default 0.60)  — weight for ML in soft voting
+                    LLM weight = 1 - ml_weight
     """
     data = request.get_json(silent=True)
 
@@ -43,7 +49,6 @@ def recommend_api():
         if not grades:
             return jsonify({"status": "error", "message": "Grades cannot be empty"}), 400
 
-        # Validate every grade value before processing
         for course, grade in grades.items():
             if grade is None:
                 continue
@@ -66,61 +71,110 @@ def recommend_api():
     if all(v == 0 for v in caps.values()):
         return jsonify({"status": "error", "message": "All capabilities are zero"}), 400
 
-    # ── Model recommendation ──────────────────────────────────────────────────
+    # ── ML recommendation ─────────────────────────────────────────────────────
     try:
-        result = recommend(caps, grades=grades)
+        ml_result = recommend(caps, grades=grades)
     except ValueError as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
-    # ── Community reranking (optional) ────────────────────────────────────────
-    top_comment = data.get("top_comment", "").strip()
-    if top_comment:
-        track_names      = [rec["track"] for rec in result["recommendations"]]
-        community_scores = get_community_scores(top_comment, recommended_tracks=track_names)
+    ml_scores    = ml_result["ml_scores"]          # {track: 0–1}
+    track_names  = [r["track"] for r in ml_result["recommendations"]]
 
-        if any(score > 0 for score in community_scores.values()):
-            result["recommendations"] = rerank_with_community(
-                result["recommendations"], community_scores, weight=0.1
-            )
-            result["community_scores"] = community_scores
+    # ── Collect LLM signals ───────────────────────────────────────────────────
+    top_comment       = data.get("top_comment", "").strip()
+    correct_answers   = data.get("correct_answers") or []
+    problem_type_ranks = data.get("problem_type_ranks") or {}
+    ml_weight         = float(data.get("ml_weight", 0.60))
+
+    has_llm_signal = bool(top_comment or correct_answers or problem_type_ranks)
+
+    llm_scores: dict[str, float] = {}
+    llm_signal_used: list[str]   = []
+
+    if has_llm_signal:
+        llm_scores = get_llm_track_scores(
+            top_comment=top_comment,
+            correct_answers=correct_answers if correct_answers else None,
+            problem_type_ranks=problem_type_ranks if problem_type_ranks else None,
+            recommended_tracks=track_names,
+        )
+        if top_comment:        llm_signal_used.append("community_comment")
+        if correct_answers:    llm_signal_used.append("quiz_answers")
+        if problem_type_ranks: llm_signal_used.append("problem_solving")
+
+    # ── Soft voting ───────────────────────────────────────────────────────────
+    if llm_scores and any(v > 0 for v in llm_scores.values()):
+        voted = soft_vote(ml_scores, llm_scores, ml_weight=ml_weight, top_k=3)
+
+        # Attach ML explanation to voted tracks
+        ml_recs_by_track = {r["track"]: r for r in ml_result["recommendations"]}
+        final_recommendations = []
+        for i, v in enumerate(voted):
+            ml_rec = ml_recs_by_track.get(v["track"], {})
+            final_recommendations.append({
+                "rank":           i + 1,
+                "track":          v["track"],
+                "final_score":    v["final_score"],       # blended 0–1
+                "ml_score":       v["ml_score"],          # ML contribution
+                "llm_score":      v["llm_score"],         # LLM contribution
+                "probability":    ml_rec.get("probability"),   # original ML %
+                "similarity":     ml_rec.get("similarity"),
+                "weighted_fit":   ml_rec.get("weighted_fit"),
+                "explanation":    ml_rec.get("explanation"),
+            })
+
+        scoring_method = "soft_voting"
+    else:
+        # No LLM signal — return pure ML result
+        final_recommendations = [
+            {
+                "rank":          i + 1,
+                "track":         rec["track"],
+                "final_score":   rec["ml_score_normalized"],
+                "ml_score":      rec["ml_score_normalized"],
+                "llm_score":     None,
+                "probability":   rec["probability"],
+                "similarity":    rec["similarity"],
+                "weighted_fit":  rec["weighted_fit"],
+                "explanation":   rec.get("explanation"),
+            }
+            for i, rec in enumerate(ml_result["recommendations"])
+        ]
+        scoring_method = "ml_only"
 
     # ── Build response ────────────────────────────────────────────────────────
-    top = result["recommendations"][0] if result["recommendations"] else {}
+    top = final_recommendations[0] if final_recommendations else {}
 
     response = {
         "student_summary": {
-            "strengths":      result["student_strengths"],
-            "top_capability": result["student_strengths"][0] if result["student_strengths"] else None,
+            "strengths":      ml_result["student_strengths"],
+            "top_capability": ml_result["student_strengths"][0] if ml_result["student_strengths"] else None,
         },
         "top_recommendation": {
             "track":     top.get("track"),
-            "match_pct": top.get("probability"),
+            "score":     top.get("final_score"),
             "why":       (top.get("explanation") or {}).get("summary"),
         },
-        "recommendations": [
-            {
-                "rank":        i + 1,
-                "track":       rec["track"],
-                "probability": rec["probability"],
-                "similarity":  rec["similarity"],
-                "weighted_fit":rec["weighted_fit"],
-                "explanation": rec.get("explanation"),
-            }
-            for i, rec in enumerate(result["recommendations"])
-        ],
+        "recommendations": final_recommendations,
+        "meta": {
+            "scoring_method":   scoring_method,
+            "ml_weight":        ml_weight if has_llm_signal else 1.0,
+            "llm_weight":       round(1 - ml_weight, 2) if has_llm_signal else 0.0,
+            "llm_signals_used": llm_signal_used,
+        },
         "insights": {
-            "confidence_level": "High" if top.get("probability", 0) > 60 else "Low",
+            "confidence_level": "High" if (top.get("final_score") or 0) > 0.35 else "Low",
         },
     }
+
+    if llm_scores:
+        response["llm_track_scores"] = llm_scores
 
     if unknown:
         response["warnings"] = {
             "unknown_courses": unknown,
             "message": "These courses were not found in course_weights.json and were ignored.",
         }
-
-    if "community_scores" in result:
-        response["community_scores"] = result["community_scores"]
 
     return jsonify(response), 200
 
