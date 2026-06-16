@@ -81,12 +81,19 @@ def recommend_api():
     track_names  = [r["track"] for r in ml_result["recommendations"]]
 
     # ── Collect LLM signals ───────────────────────────────────────────────────
-    top_comment       = data.get("top_comment", "").strip()
-    correct_answers   = data.get("correct_answers") or []
+    top_comment        = data.get("top_comment", "").strip()
+    correct_answers    = data.get("correct_answers") or []
     problem_type_ranks = data.get("problem_type_ranks") or {}
-    ml_weight         = float(data.get("ml_weight", 0.60))
 
     has_llm_signal = bool(top_comment or correct_answers or problem_type_ranks)
+
+    # Dynamic ml_weight: more signals = more trust in LLM = lower ml_weight
+    signal_count = sum([
+        1 if top_comment else 0,
+        1 if correct_answers else 0,
+        1 if problem_type_ranks else 0,
+    ])
+    ml_weight = {0: 1.0, 1: 0.75, 2: 0.60, 3: 0.50}[signal_count]
 
     llm_scores: dict[str, float] = {}
     llm_signal_used: list[str]   = []
