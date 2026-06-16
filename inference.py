@@ -70,20 +70,8 @@ def explain_recommendation(
     grades: dict,
     course_weights: dict,
 ) -> dict:
-    """
-    Generate a deterministic, local explanation for a recommended track.
-
-    Returns:
-        {
-            "summary":          str,
-            "top_capabilities": [{"capability", "score", "level"}, ...],
-            "top_courses":      [{"course", "grade", "contributed_to"}, ...],
-            "track_fit":        [{"capability", "required", "student", "fit"}, ...]
-        }
-    """
     track_caps = TRACK_PROFILES.get(track_name, {})
 
-    # 1. Student's top capabilities
     top_capabilities = [
         {
             "capability": cap,
@@ -94,7 +82,6 @@ def explain_recommendation(
         if score > 0
     ][:4]
 
-    # 2. Courses that contributed most to this track
     course_contributions = []
     normalized_grades = {k.replace(" ", "").upper(): v for k, v in grades.items()}
 
@@ -124,7 +111,6 @@ def explain_recommendation(
         for c in course_contributions[:3]
     ]
 
-    # 3. Per-capability fit breakdown
     track_fit = [
         {
             "capability": cap,
@@ -135,9 +121,8 @@ def explain_recommendation(
         for cap, weight in sorted(track_caps.items(), key=lambda x: -x[1])
     ]
 
-    # 4. Summary sentence
-    strong_fits      = [f["capability"] for f in track_fit if f["fit"] == "Strong"]
-    top_course_name  = top_courses[0]["course"] if top_courses else None
+    strong_fits     = [f["capability"] for f in track_fit if f["fit"] == "Strong"]
+    top_course_name = top_courses[0]["course"] if top_courses else None
 
     if strong_fits:
         caps_str = " and ".join(strong_fits[:2])
@@ -167,15 +152,12 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
     """
     Full pipeline: capability vector → ML model → ranked tracks → XAI explanations.
 
-    Args:
-        student_caps: pre-computed capability vector {cap: score}
-        grades:       original raw grades dict (used for XAI; optional)
-        top_k:        number of tracks to return
-
     Returns:
         {
             "student_strengths":  [str, ...],
-            "recommendations":    [{track, probability, similarity, weighted_fit, explanation}, ...],
+            "recommendations":    [{track, probability, similarity, weighted_fit,
+                                    ml_score_normalized, explanation}, ...],
+            "ml_scores":          {track: normalized_score (0–1)}   ← new
         }
     """
     validate_input(student_caps)
@@ -185,7 +167,6 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
     cap_values  = [student_caps[cap] for cap in CAPABILITIES]
     student_vec = np.array(cap_values).reshape(1, -1)
 
-    # Similarity + weighted dot features for ML model
     sim_values = [
         cosine_similarity(student_vec, TRACK_VECS[track])[0, 0]
         for track in TRACK_PROFILES
@@ -198,9 +179,16 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
     x     = np.array(cap_values + sim_values + wdp_values).reshape(1, -1)
     probs = model.predict_proba(x)[0]
 
+    # ── Normalize ML probabilities to [0, 1] per-track dict ───────────────────
+    # probs already sum to 1 (softmax). We keep them as-is so they're comparable
+    # with LLM scores when blended via soft voting.
+    ml_scores_normalized: dict[str, float] = {
+        le.classes_[i]: float(round(probs[i], 4))
+        for i in range(len(le.classes_))
+    }
+
     top_idx = probs.argsort()[::-1][:top_k]
 
-    # Student strengths
     top_strengths = [
         cap for cap, _ in sorted(student_caps.items(), key=lambda x: -x[1])[:3]
     ]
@@ -212,11 +200,12 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
         wdp        = weighted_dot_score(student_caps, TRACK_PROFILES[track])
 
         rec = {
-            "track":        track,
-            "probability":  float(round(probs[i] * 100, 2)),
-            "similarity":   float(round(similarity * 100, 2)),
-            "weighted_fit": float(round(wdp * 100, 2)),
-            "explanation":  None,
+            "track":                track,
+            "probability":          float(round(probs[i] * 100, 2)),
+            "ml_score_normalized":  ml_scores_normalized[track],   # ← for soft voting
+            "similarity":           float(round(similarity * 100, 2)),
+            "weighted_fit":         float(round(wdp * 100, 2)),
+            "explanation":          None,
         }
 
         if grades is not None:
@@ -229,10 +218,56 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
     return {
         "student_strengths": top_strengths,
         "recommendations":   results,
+        "ml_scores":         ml_scores_normalized,   # ← full dict for soft voting
     }
 
 
-# ─── Community reranking ───────────────────────────────────────────────────────
+# ─── Soft voting: ML + LLM ────────────────────────────────────────────────────
+
+def soft_vote(
+    ml_scores: dict[str, float],
+    llm_scores: dict[str, float],
+    ml_weight: float = 0.60,
+    top_k: int = 3,
+) -> list[dict]:
+    """
+    Blend ML and LLM track scores via weighted average (soft voting).
+
+    Both score dicts must be in [0, 1] range.
+    ML scores come from normalized softmax probabilities.
+    LLM scores come from get_llm_track_scores() in llm_scorer.py.
+
+    Args:
+        ml_scores:  {track: probability (0–1)} — from recommend()["ml_scores"]
+        llm_scores: {track: score (0–1)}       — from get_llm_track_scores()
+        ml_weight:  weight for ML signal (LLM gets 1 - ml_weight)
+        top_k:      how many tracks to return
+
+    Returns:
+        List of dicts sorted by final_score descending:
+        [{track, ml_score, llm_score, final_score}, ...]
+    """
+    llm_weight = 1.0 - ml_weight
+
+    all_tracks = set(ml_scores) | set(llm_scores)
+    blended = []
+
+    for track in all_tracks:
+        ml  = ml_scores.get(track, 0.0)
+        llm = llm_scores.get(track, 0.0)
+        final = round(ml_weight * ml + llm_weight * llm, 4)
+        blended.append({
+            "track":       track,
+            "ml_score":    round(ml, 4),
+            "llm_score":   round(llm, 4),
+            "final_score": final,
+        })
+
+    blended.sort(key=lambda x: -x["final_score"])
+    return blended[:top_k]
+
+
+# ─── Community reranking (kept for backward compatibility) ─────────────────────
 
 def rerank_with_community(
     recommendations: list,
