@@ -107,20 +107,46 @@ def recommend_api():
         voted = soft_vote(ml_scores, llm_scores, ml_weight=ml_weight, top_k=3)
 
         # Attach ML explanation to voted tracks
+        from inference import explain_recommendation
+        from sklearn.metrics.pairwise import cosine_similarity as cos_sim
+        import numpy as np
+        from config import CAPABILITIES, TRACK_PROFILES, TRACK_VECS
+
         ml_recs_by_track = {r["track"]: r for r in ml_result["recommendations"]}
+        student_vec = np.array([caps[c] for c in CAPABILITIES]).reshape(1, -1)
+
         final_recommendations = []
         for i, v in enumerate(voted):
-            ml_rec = ml_recs_by_track.get(v["track"], {})
+            track  = v["track"]
+            ml_rec = ml_recs_by_track.get(track)
+
+            if ml_rec:
+                # Track was in ML top_k — use its data directly
+                probability  = ml_rec.get("probability")
+                similarity   = ml_rec.get("similarity")
+                weighted_fit = ml_rec.get("weighted_fit")
+                explanation  = ml_rec.get("explanation")
+            else:
+                # Track was promoted by LLM — compute its stats on the fly
+                from inference import weighted_dot_score
+                probability  = round(ml_scores.get(track, 0.0) * 100, 2)
+                similarity   = round(float(cos_sim(student_vec, TRACK_VECS[track])[0, 0]) * 100, 2)
+                weighted_fit = round(weighted_dot_score(caps, TRACK_PROFILES[track]) * 100, 2)
+                explanation  = explain_recommendation(
+                    track, caps, grades or {}, COURSE_CAPABILITY_WEIGHTS
+                ) if grades else None
+
             final_recommendations.append({
                 "rank":           i + 1,
-                "track":          v["track"],
-                "final_score":    v["final_score"],       # blended 0–1
-                "ml_score":       v["ml_score"],          # ML contribution
-                "llm_score":      v["llm_score"],         # LLM contribution
-                "probability":    ml_rec.get("probability"),   # original ML %
-                "similarity":     ml_rec.get("similarity"),
-                "weighted_fit":   ml_rec.get("weighted_fit"),
-                "explanation":    ml_rec.get("explanation"),
+                "track":          track,
+                "final_score":    v["final_score"],
+                "ml_score":       v["ml_score"],
+                "llm_score":      v["llm_score"],
+                "probability":    probability,
+                "similarity":     similarity,
+                "weighted_fit":   weighted_fit,
+                "explanation":    explanation,
+                "llm_promoted":   ml_rec is None,   # flag: LLM رفع التراك ده
             })
 
         scoring_method = "soft_voting"
