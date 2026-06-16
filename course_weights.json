@@ -1,0 +1,23 @@
+{
+  "MATH18":   {"Math": 1.0},
+  "MATH19":   {"Math": 1.0},
+  "MATH20":   {"Math": 1.0},
+  "MATH21":   {"Math": 1.0},
+  "MATH51":   {"Math": 0.95, "Theory": 0.05},
+  "MATH52":   {"Math": 0.95, "Theory": 0.05},
+  "MATH53":   {"Math": 0.95, "Theory": 0.05},
+  "PHYS41":   {"Math": 0.50, "Hardware": 0.35, "Systems": 0.15},
+  "PHYS43":   {"Math": 0.45, "Hardware": 0.40, "Systems": 0.15},
+  "BIO":      {"Biology": 0.85, "Math": 0.10, "Data": 0.05},
+  "CHEM":     {"Biology": 0.50, "Math": 0.40, "Data": 0.10},
+  "ENGR40M":  {"Hardware": 0.45, "Programming": 0.35, "Systems": 0.20},
+  "ENGR76":   {"Math": 0.35, "Systems": 0.30, "Data": 0.20, "Programming": 0.15},
+  "CS103":    {"Theory": 0.55, "Algorithms": 0.30, "Math": 0.15},
+  "CS109":    {"Math": 0.35, "Data": 0.35, "AI": 0.20, "Algorithms": 0.10},
+  "CS106A":   {"Programming": 0.90, "UX": 0.10},
+  "CS106B":   {"Programming": 0.80, "Algorithms": 0.20},
+  "CS106X":   {"Programming": 0.75, "Graphics": 0.25},
+  "CS107":    {"Systems": 0.50, "Programming": 0.50},
+  "CS110":    {"Systems": 0.60, "Programming": 0.40},
+  "CS161":    {"Algorithms": 0.65, "Theory": 0.25, "Math": 0.10}
+}
