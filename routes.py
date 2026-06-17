@@ -98,16 +98,21 @@ def recommend_api():
     llm_scores: dict[str, float] = {}
     llm_signal_used: list[str]   = []
 
+    # grades are always passed to LLM for contextual interpretation
+    has_llm_signal = bool(top_comment or correct_answers or problem_type_ranks or grades)
+
     if has_llm_signal:
         llm_scores = get_llm_track_scores(
             top_comment=top_comment,
             correct_answers=correct_answers if correct_answers else None,
             problem_type_ranks=problem_type_ranks if problem_type_ranks else None,
+            grades=grades,
             recommended_tracks=track_names,
         )
         if top_comment:        llm_signal_used.append("community_comment")
         if correct_answers:    llm_signal_used.append("quiz_answers")
         if problem_type_ranks: llm_signal_used.append("problem_solving")
+        if grades:             llm_signal_used.append("grades")
 
     # ── Soft voting ───────────────────────────────────────────────────────────
     if llm_scores and any(v > 0 for v in llm_scores.values()):
