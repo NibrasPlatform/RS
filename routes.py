@@ -154,7 +154,7 @@ def recommend_api():
                 track_fit  = explanation.get("track_fit", [])
                 weak_caps  = [
                     f["capability"] for f in track_fit
-                    if f["fit"] == "Needs improvement" and f["required"] >= 0.20
+                    if f["fit"] == "Needs improvement" and f["required"] >= 0.15
                 ]
                 if weak_caps:
                     fit_warning = (
