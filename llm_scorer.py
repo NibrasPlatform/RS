@@ -89,6 +89,129 @@ PROBLEM_TYPE_TRACK_MAP: dict[str, dict[str, float]] = {
     "Probability & Statistics": {"Artificial Intelligence": 0.50, "Computational Biology": 0.30, "Information Track": 0.20},
 }
 
+
+# ─── Platform tag → Standard problem type mapping ─────────────────────────────
+# Converts raw tags from Codeforces, LeetCode, TryHackMe to standard types.
+# Unknown tags are passed to the LLM as-is for inference.
+
+PLATFORM_TAG_MAP: dict[str, str] = {
+    # ── Codeforces tags ────────────────────────────────────────────────────────
+    "dp":                        "Dynamic Programming",
+    "dynamic programming":       "Dynamic Programming",
+    "graphs":                    "Graph Algorithms",
+    "graph":                     "Graph Algorithms",
+    "shortest paths":            "Graph Algorithms",
+    "trees":                     "Graph Algorithms",
+    "dfs and similar":           "Graph Algorithms",
+    "math":                      "Math / Proofs",
+    "number theory":             "Math / Proofs",
+    "combinatorics":             "Combinatorics",
+    "probabilities":             "Probability & Statistics",
+    "geometry":                  "Geometry / Computational Geometry",
+    "strings":                   "Data Structures",
+    "data structures":           "Data Structures",
+    "sorting":                   "Sorting / Searching",
+    "binary search":             "Sorting / Searching",
+    "greedy":                    "Sorting / Searching",
+    "brute force":               "Sorting / Searching",
+    "two pointers":              "Data Structures",
+    "implementation":            "Data Structures",
+    "bitmasks":                  "Data Structures",
+    "constructive algorithms":   "Automata / Complexity",
+    "games":                     "Theory",
+    "flows":                     "Graph Algorithms",
+    "matrices":                  "Math / Proofs",
+    "fft":                       "Math / Proofs",
+    "hashing":                   "Cryptography / Security",
+
+    # ── LeetCode topics ────────────────────────────────────────────────────────
+    "dynamic programming":       "Dynamic Programming",
+    "tree":                      "Graph Algorithms",
+    "graph":                     "Graph Algorithms",
+    "depth-first search":        "Graph Algorithms",
+    "breadth-first search":      "Graph Algorithms",
+    "union find":                "Graph Algorithms",
+    "topological sort":          "Graph Algorithms",
+    "array":                     "Data Structures",
+    "string":                    "Data Structures",
+    "hash table":                "Data Structures",
+    "stack":                     "Data Structures",
+    "queue":                     "Data Structures",
+    "heap (priority queue)":     "Data Structures",
+    "linked list":               "Data Structures",
+    "binary search":             "Sorting / Searching",
+    "sorting":                   "Sorting / Searching",
+    "two pointers":              "Data Structures",
+    "sliding window":            "Data Structures",
+    "math":                      "Math / Proofs",
+    "bit manipulation":          "Data Structures",
+    "backtracking":              "Automata / Complexity",
+    "divide and conquer":        "Dynamic Programming",
+    "greedy":                    "Sorting / Searching",
+    "recursion":                 "Automata / Complexity",
+    "memoization":               "Dynamic Programming",
+    "database":                  "Database & SQL",
+    "design":                    "Data Structures",
+    "simulation":                "Simulation",
+    "geometry":                  "Geometry / Computational Geometry",
+    "randomized":                "Probability & Statistics",
+    "number theory":             "Math / Proofs",
+    "combinatorics":             "Combinatorics",
+    "trie":                      "Data Structures",
+    "segment tree":              "Data Structures",
+    "binary indexed tree":       "Data Structures",
+    "monotonic stack":           "Data Structures",
+    "prefix sum":                "Data Structures",
+    "counting":                  "Math / Proofs",
+
+    # ── TryHackMe / CTF categories ─────────────────────────────────────────────
+    "network security":          "Networking",
+    "networking":                "Networking",
+    "web exploitation":          "Cryptography / Security",
+    "web application security":  "Cryptography / Security",
+    "cryptography":              "Cryptography / Security",
+    "crypto":                    "Cryptography / Security",
+    "reverse engineering":       "Low-level Programming",
+    "reversing":                 "Low-level Programming",
+    "binary exploitation":       "Low-level Programming",
+    "pwn":                       "Low-level Programming",
+    "forensics":                 "Information Retrieval",
+    "digital forensics":         "Information Retrieval",
+    "osint":                     "Information Retrieval",
+    "steganography":             "Information Retrieval",
+    "malware analysis":          "Low-level Programming",
+    "linux":                     "OS Concepts",
+    "windows":                   "OS Concepts",
+    "privilege escalation":      "OS Concepts",
+    "active directory":          "OS Concepts",
+    "cloud":                     "Networking",
+    "penetration testing":       "Cryptography / Security",
+    "social engineering":        "Cryptography / Security",
+    "ctf":                       "Cryptography / Security",
+    "scripting":                 "Low-level Programming",
+    "programming":               "Low-level Programming",
+    "sql injection":             "Database & SQL",
+    "machine learning":          "Machine Learning",
+    "ai":                        "Machine Learning",
+}
+
+
+def normalize_problem_tags(
+    raw_ranks: dict[str, int | float],
+) -> dict[str, int | float]:
+    """
+    Convert raw platform tags to standard problem types.
+
+    Known tags are mapped via PLATFORM_TAG_MAP.
+    Unknown tags are kept as-is — the LLM will infer their track.
+    Counts for the same standard type are summed.
+    """
+    normalized: dict[str, int | float] = {}
+    for tag, count in raw_ranks.items():
+        standard = PLATFORM_TAG_MAP.get(tag.lower().strip(), tag)
+        normalized[standard] = normalized.get(standard, 0) + count
+    return normalized
+
 def _build_mapping_context() -> str:
     """Format the problem type map as readable context for the LLM prompt."""
     lines = []
@@ -256,6 +379,9 @@ def get_problem_solving_scores(
     """
     if not problem_type_ranks:
         return _zero_track_scores()
+
+    # Normalize raw platform tags to standard problem types first
+    problem_type_ranks = normalize_problem_tags(problem_type_ranks)
 
     # Normalize counts to relative proportions so LLM sees signal strength
     total = sum(problem_type_ranks.values()) or 1
