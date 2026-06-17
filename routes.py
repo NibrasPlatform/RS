@@ -143,6 +143,21 @@ def recommend_api():
                     track, caps, grades or {}, COURSE_CAPABILITY_WEIGHTS
                 ) if grades else None
 
+            # ── Track fit health check ───────────────────────────────────────
+            fit_warning = None
+            if explanation:
+                track_fit  = explanation.get("track_fit", [])
+                weak_caps  = [
+                    f["capability"] for f in track_fit
+                    if f["fit"] == "Needs improvement" and f["required"] >= 0.20
+                ]
+                if weak_caps:
+                    fit_warning = (
+                        f"Missing key capabilities for this track: "
+                        f"{', '.join(weak_caps)}. "
+                        f"Consider strengthening these areas before committing to this path."
+                    )
+
             final_recommendations.append({
                 "rank":           i + 1,
                 "track":          track,
@@ -153,7 +168,8 @@ def recommend_api():
                 "similarity":     similarity,
                 "weighted_fit":   weighted_fit,
                 "explanation":    explanation,
-                "llm_promoted":   ml_rec is None,   # flag: LLM رفع التراك ده
+                "llm_promoted":   ml_rec is None,
+                "fit_warning":    fit_warning,
             })
 
         scoring_method = "soft_voting"
