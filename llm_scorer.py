@@ -29,6 +29,74 @@ TRACKS = [
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) if os.getenv("OPENAI_API_KEY") else None
 
+# ─── Problem type → Track mapping ─────────────────────────────────────────────
+# Each problem type maps to the tracks it signals, with a weight (0–1).
+# Used to give the LLM explicit context instead of guessing.
+
+PROBLEM_TYPE_TRACK_MAP: dict[str, dict[str, float]] = {
+    # Artificial Intelligence
+    "Machine Learning":         {"Artificial Intelligence": 0.90, "Information Track": 0.10},
+    "Neural Networks":          {"Artificial Intelligence": 0.95},
+    "Search & Optimization":    {"Artificial Intelligence": 0.70, "Theory": 0.30},
+    "NLP Problems":             {"Artificial Intelligence": 0.85, "Information Track": 0.15},
+    "Computer Vision":          {"Visual Computing": 0.70, "Artificial Intelligence": 0.30},
+
+    # Theory
+    "Dynamic Programming":      {"Theory": 0.70, "Artificial Intelligence": 0.20, "Information Track": 0.10},
+    "Graph Algorithms":         {"Theory": 0.60, "Artificial Intelligence": 0.20, "Systems": 0.20},
+    "Math / Proofs":            {"Theory": 0.80, "Artificial Intelligence": 0.20},
+    "Combinatorics":            {"Theory": 0.85, "Computational Biology": 0.15},
+    "Automata / Complexity":    {"Theory": 0.95},
+
+    # Systems
+    "OS Concepts":              {"Systems": 0.90, "Computer Engineering": 0.10},
+    "Memory Management":        {"Systems": 0.70, "Computer Engineering": 0.30},
+    "Concurrency":              {"Systems": 0.85, "Computer Engineering": 0.15},
+    "Networking":               {"Systems": 0.75, "Information Track": 0.25},
+    "Compilers":                {"Systems": 0.80, "Theory": 0.20},
+
+    # Computer Engineering
+    "Circuit Design":           {"Computer Engineering": 0.95},
+    "Low-level Programming":    {"Computer Engineering": 0.70, "Systems": 0.30},
+    "Hardware Architecture":    {"Computer Engineering": 0.90, "Systems": 0.10},
+    "Embedded Systems":         {"Computer Engineering": 0.85, "Systems": 0.15},
+
+    # Visual Computing
+    "Geometry / Computational Geometry": {"Visual Computing": 0.90, "Theory": 0.10},
+    "Image Processing":         {"Visual Computing": 0.85, "Artificial Intelligence": 0.15},
+    "Graphics Rendering":       {"Visual Computing": 0.95},
+    "Simulation":               {"Visual Computing": 0.60, "Artificial Intelligence": 0.40},
+
+    # Human-Computer Interaction
+    "UI / UX Problems":         {"Human-Computer Interaction": 0.95},
+    "Accessibility":            {"Human-Computer Interaction": 0.90},
+    "Human Factors":            {"Human-Computer Interaction": 0.85},
+
+    # Information Track
+    "Database & SQL":           {"Information Track": 0.90, "Systems": 0.10},
+    "Data Analysis":            {"Information Track": 0.70, "Artificial Intelligence": 0.30},
+    "Cryptography / Security":  {"Information Track": 0.60, "Systems": 0.40},
+    "Information Retrieval":    {"Information Track": 0.80, "Artificial Intelligence": 0.20},
+
+    # Computational Biology
+    "Sequence Alignment":       {"Computational Biology": 0.95},
+    "Bioinformatics":           {"Computational Biology": 0.90, "Information Track": 0.10},
+    "Genomics / Statistics":    {"Computational Biology": 0.80, "Artificial Intelligence": 0.20},
+
+    # General (signal to multiple tracks)
+    "Data Structures":          {"Theory": 0.40, "Systems": 0.30, "Artificial Intelligence": 0.30},
+    "Sorting / Searching":      {"Theory": 0.50, "Artificial Intelligence": 0.30, "Information Track": 0.20},
+    "Probability & Statistics": {"Artificial Intelligence": 0.50, "Computational Biology": 0.30, "Information Track": 0.20},
+}
+
+def _build_mapping_context() -> str:
+    """Format the problem type map as readable context for the LLM prompt."""
+    lines = []
+    for ptype, track_weights in PROBLEM_TYPE_TRACK_MAP.items():
+        track_str = ", ".join(f"{t} ({int(w*100)}%)" for t, w in track_weights.items())
+        lines.append(f"  - {ptype}: signals → {track_str}")
+    return "\n".join(lines)
+
 
 # ─── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -193,19 +261,31 @@ def get_problem_solving_scores(
     total = sum(problem_type_ranks.values()) or 1
     proportions = {k: round(v / total, 3) for k, v in problem_type_ranks.items()}
 
-    track_list = "\n".join(f"- {t}" for t in TRACKS)
+    track_list      = "\n".join(f"- {t}" for t in TRACKS)
+    mapping_context = _build_mapping_context()
+
+    known        = set(PROBLEM_TYPE_TRACK_MAP.keys())
+    unknown_types = [k for k in problem_type_ranks if k not in known]
+    unknown_note = (
+        "\nNote: These types have no predefined mapping — infer their tracks from their name:\n"
+        + "\n".join(f"  - {u}" for u in unknown_types)
+    ) if unknown_types else ""
+
     prompt = f"""You are a CS track advisor analyzing a student's problem-solving activity.
 
-Below are the types of problems the student solves most (as proportions of total activity):
+REFERENCE — Problem type to track mapping (use this as your primary signal):
+{mapping_context}
+{unknown_note}
+
+Student's problem-solving activity (as proportions of total):
 {json.dumps(proportions, indent=2)}
 
-For each track, assign a score (0.0 to 1.0) reflecting how well this
-problem-solving pattern aligns with the track's focus.
-
-Rules:
-- Higher proportion = stronger signal. Weight scores accordingly.
-- Use soft scoring. Multiple tracks can be high.
-- Output valid JSON only: {{"track_name": score, ...}}. No explanation.
+Instructions:
+1. For each problem type, look up its track mapping in the REFERENCE above.
+2. Multiply each track's mapping weight by the student's proportion for that type.
+3. Sum contributions per track across all problem types, then normalize to [0, 1].
+4. Use soft scoring — multiple tracks can score high.
+5. Output valid JSON only: {{"track_name": score, ...}}. No explanation.
 
 Tracks:
 {track_list}"""
