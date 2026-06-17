@@ -255,7 +255,14 @@ def soft_vote(
     for track in all_tracks:
         ml  = ml_scores.get(track, 0.0)
         llm = llm_scores.get(track, 0.0)
-        final = round(ml_weight * ml + llm_weight * llm, 4)
+
+        # If LLM has no signal for this track (score = 0), don't penalize it.
+        # Fall back to ML score only — absence of LLM signal ≠ negative signal.
+        if llm == 0.0:
+            final = round(ml, 4)
+        else:
+            final = round(ml_weight * ml + llm_weight * llm, 4)
+
         blended.append({
             "track":       track,
             "ml_score":    round(ml, 4),
