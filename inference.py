@@ -256,10 +256,12 @@ def soft_vote(
         ml  = ml_scores.get(track, 0.0)
         llm = llm_scores.get(track, 0.0)
 
-        # If LLM has no signal for this track (score = 0), don't penalize it.
-        # Fall back to ML score only — absence of LLM signal ≠ negative signal.
+        # If LLM has no signal for this track (score = 0):
+        # Apply a confidence discount — no LLM confirmation = less certain.
+        # This prevents ML-only tracks from unfairly beating tracks
+        # that have real LLM signal but lower ML probability.
         if llm == 0.0:
-            final = round(ml, 4)
+            final = round(ml * 0.6, 4)
         else:
             final = round(ml_weight * ml + llm_weight * llm, 4)
 
