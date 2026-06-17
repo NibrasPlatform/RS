@@ -16,15 +16,19 @@ CAPS = [f"cap_{c}" for c in CAPABILITIES]
 TARGET_COL = "Track_1"
 
 # ─── Track profiles ────────────────────────────────────────────────────────────
+# TRACK_PROFILES derived from Stanford CS Bulletin course descriptions.
+# Method: each track course was mapped to capability weights based on its
+# official description and topics. Weights were averaged across all track
+# courses then normalized to sum = 1.0.
 TRACK_PROFILES = {
-    "Artificial Intelligence":    {"AI": 0.35, "Math": 0.20, "Algorithms": 0.20, "Data": 0.15, "Programming": 0.10},
-    "Systems":                    {"Systems": 0.35, "Programming": 0.25, "Hardware": 0.20, "Algorithms": 0.10, "Security": 0.10},
-    "Theory":                     {"Math": 0.45, "Theory": 0.35, "Algorithms": 0.20},
-    "Human-Computer Interaction": {"UX": 0.40, "Programming": 0.25, "Data": 0.15, "Theory": 0.10, "Graphics": 0.10},
-    "Visual Computing":           {"Graphics": 0.40, "Math": 0.25, "AI": 0.20, "Programming": 0.15},
-    "Computer Engineering":       {"Hardware": 0.40, "Systems": 0.30, "Programming": 0.15, "Security": 0.15},
-    "Information Track":          {"Data": 0.40, "Programming": 0.25, "Math": 0.15, "UX": 0.10, "Security": 0.10},
-    "Computational Biology":      {"Biology": 0.35, "Data": 0.25, "AI": 0.20, "Math": 0.20},
+    "Artificial Intelligence":    {"AI": 0.60, "Math": 0.26, "Algorithms": 0.06, "Programming": 0.04, "Graphics": 0.04},
+    "Systems":                    {"Systems": 0.45, "Programming": 0.25, "Hardware": 0.14, "Security": 0.10, "Theory": 0.06},
+    "Theory":                     {"Theory": 0.40, "Math": 0.29, "Algorithms": 0.25, "Security": 0.06},
+    "Human-Computer Interaction": {"UX": 0.57, "Data": 0.26, "Programming": 0.10, "Theory": 0.07},
+    "Visual Computing":           {"Math": 0.34, "AI": 0.33, "Graphics": 0.21, "Systems": 0.07, "Algorithms": 0.04},
+    "Computer Engineering":       {"Hardware": 0.45, "Systems": 0.28, "Math": 0.15, "Programming": 0.13},
+    "Information Track":          {"Data": 0.46, "AI": 0.13, "Programming": 0.09, "Algorithms": 0.09, "Math": 0.09, "Security": 0.07, "Systems": 0.06},
+    "Computational Biology":      {"Biology": 0.29, "AI": 0.24, "Data": 0.16, "UX": 0.11, "Math": 0.10, "Algorithms": 0.05, "Theory": 0.05},
 }
 
 
