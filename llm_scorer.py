@@ -294,38 +294,114 @@ Tracks:
     return _parse_track_scores(raw) if raw else _zero_track_scores()
 
 
-# ─── 4. Aggregate LLM scorer (combines all signals) ───────────────────────────
+
+# ─── 4. Grades context analyzer ───────────────────────────────────────────────
+
+def get_grades_scores(
+    grades: dict[str, float],
+    other_signals_summary: str = "",
+) -> dict[str, float]:
+    """
+    Let the LLM interpret grades in context — not as raw numbers, but as a
+    pattern of academic choices that signal track affinity.
+
+    Unlike the ML model (which multiplies grades × weights mechanically),
+    the LLM considers the *combination* of courses and whether any single
+    course is an outlier vs. a consistent pattern.
+
+    Args:
+        grades:                {course_code: grade (0-100)}
+        other_signals_summary: Optional one-line summary of other signals
+                               (e.g. "Student talks about security and networking")
+                               to help the LLM contextualize the grades.
+
+    Returns:
+        {track_name: score (0.0–1.0)} for all TRACKS.
+    """
+    if not grades:
+        return _zero_track_scores()
+
+    from mapper import COURSE_CAPABILITY_WEIGHTS  # late import
+
+    # Build a human-readable course list with known focus areas
+    course_lines = []
+    for course, grade in grades.items():
+        norm = course.replace(" ", "").upper()
+        caps = COURSE_CAPABILITY_WEIGHTS.get(norm, {})
+        focus = ", ".join(
+            f"{cap}({int(w*100)}%)" for cap, w in
+            sorted(caps.items(), key=lambda x: -x[1])[:3]
+        ) if caps else "unknown focus"
+        course_lines.append(f"  - {course}: {int(grade)}/100  [{focus}]")
+
+    courses_block = "\n".join(course_lines)
+    track_list    = "\n".join(f"- {t}" for t in TRACKS)
+    context_note  = f"\nOther signals about this student: {other_signals_summary}" if other_signals_summary else ""
+
+    prompt = f"""You are a CS academic advisor analyzing a student's course history.
+
+For each course below, the focus areas (capabilities) are listed in brackets.
+Your job is NOT to mechanically multiply grades × weights.
+Instead, reason about the PATTERN: which tracks does this student's academic
+history genuinely point toward, considering all courses together?
+
+Key reasoning rules:
+- A single high-grade course in an area does NOT automatically mean the student
+  wants that track — look at the overall pattern.
+- Consistent performance across multiple courses in related areas = strong signal.
+- An isolated course (e.g., one graphics course among many systems courses)
+  should be downweighted.
+- If other signals (below) contradict what a single course suggests, trust the pattern.
+{context_note}
+
+Student's course history:
+{courses_block}
+
+For each track, assign a score (0.0 to 1.0) reflecting how strongly this
+academic history points toward that track.
+
+Rules:
+- Use soft, continuous scoring. Multiple tracks can score high.
+- Output valid JSON only: {{"track_name": score, ...}}. No explanation.
+
+Tracks:
+{track_list}"""
+
+    raw = _call_openai(prompt)
+    return _parse_track_scores(raw) if raw else _zero_track_scores()
+
+
+# ─── 5. Aggregate LLM scorer (combines all signals) ───────────────────────────
 
 def get_llm_track_scores(
     top_comment: str = "",
     correct_answers: list[str] | None = None,
     problem_type_ranks: dict[str, int | float] | None = None,
+    grades: dict[str, float] | None = None,
     recommended_tracks: list[str] | None = None,
     weights: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """
     Aggregate all LLM-based signals into a single per-track score (0.0–1.0).
 
-    Each available signal is scored independently, then combined via
-    weighted average so the result stays in the same [0, 1] range as
-    the ML model's normalized probabilities.
+    Signals:
+        community (0.30) — comment text
+        quiz      (0.35) — correct quiz answers
+        problem   (0.15) — problem solving ranks
+        grades    (0.20) — course history interpreted in context
 
-    Args:
-        top_comment:          Community comment text.
-        correct_answers:      List of correct quiz answer strings.
-        problem_type_ranks:   {problem_type: count/rank}.
-        recommended_tracks:   Tracks already suggested by ML (used to
-                              filter community score).
-        weights:              Override default signal weights.
-                              Keys: "community", "quiz", "problem_solving".
-
-    Returns:
-        {track_name: aggregated_score (0.0–1.0)}
+    Each signal is scored independently then combined via weighted average.
+    Only signals that are provided are included — weights are renormalized.
     """
-    default_weights = {"community": 0.35, "quiz": 0.45, "problem_solving": 0.20}
+    default_weights = {
+        "community":       0.30,
+        "quiz":            0.35,
+        "problem_solving": 0.15,
+        "grades":          0.20,
+    }
     w = {**default_weights, **(weights or {})}
 
-    scores_list: list[tuple[dict, float]] = []  # (score_dict, weight)
+    scores_list: list[tuple[dict, float]] = []
 
     if top_comment and top_comment.strip():
         community = get_community_scores(top_comment, recommended_tracks)
@@ -342,10 +418,24 @@ def get_llm_track_scores(
         scores_list.append((ps, w["problem_solving"]))
         logger.info("Problem-solving signal collected.")
 
+    if grades:
+        # Build a one-line summary of other signals for context
+        signals_parts = []
+        if top_comment:    signals_parts.append(f"comment: \"{top_comment[:80]}\"")
+        if correct_answers: signals_parts.append(f"{len(correct_answers)} correct quiz answers")
+        if problem_type_ranks:
+            top_prob = max(problem_type_ranks, key=problem_type_ranks.get)
+            signals_parts.append(f"most solved: {top_prob}")
+        context = "; ".join(signals_parts) if signals_parts else ""
+
+        grade_scores = get_grades_scores(grades, other_signals_summary=context)
+        scores_list.append((grade_scores, w["grades"]))
+        logger.info("Grades signal collected.")
+
     if not scores_list:
         return _zero_track_scores()
 
-    # Weighted average over only the signals that were provided
+    # Weighted average — renormalize over only the signals provided
     total_w = sum(weight for _, weight in scores_list)
     aggregated = {}
     for track in TRACKS:
