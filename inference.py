@@ -271,6 +271,10 @@ def soft_vote(
         })
 
     blended.sort(key=lambda x: -x["final_score"])
+
+    # Filter out tracks below the minimum score threshold
+    blended = [b for b in blended if b["final_score"] >= 0.05]
+
     return blended[:top_k]
 
 
