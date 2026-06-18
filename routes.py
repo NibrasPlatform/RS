@@ -5,7 +5,7 @@ import os
 from flask import Blueprint, jsonify, request
 
 from inference import recommend, soft_vote, rerank_with_community
-from llm_scorer import get_llm_track_scores, get_community_scores
+from llm_scorer import get_llm_track_scores, get_community_scores, explain_recommendation_to_student
 from mapper import (
     COURSE_CAPABILITY_WEIGHTS,
     add_course_to_weights,
@@ -206,8 +206,23 @@ def recommend_api():
         ]
         scoring_method = "ml_only"
 
+    # ── Generate student-facing XAI for top recommendation ──────────────────
+    top_rec = final_recommendations[0] if final_recommendations else {}
+    student_xai = None
+    if top_rec:
+        student_xai = explain_recommendation_to_student(
+            track_name=top_rec["track"],
+            grades=grades or {},
+            top_comment=top_comment,
+            correct_answers=correct_answers,
+            problem_type_ranks=problem_type_ranks,
+            ml_score=top_rec["ml_score"],
+            llm_score=top_rec["llm_score"],
+            final_score=top_rec["final_score"],
+        )
+
     # ── Build response ────────────────────────────────────────────────────────
-    top = final_recommendations[0] if final_recommendations else {}
+    top = top_rec
 
     response = {
         "student_summary": {
@@ -218,6 +233,7 @@ def recommend_api():
             "track":     top.get("track"),
             "score":     top.get("final_score"),
             "why":       (top.get("explanation") or {}).get("summary"),
+            "xai":       student_xai,
         },
         "recommendations": final_recommendations,
         "meta": {
