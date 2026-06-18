@@ -22,24 +22,38 @@ recommend_bp = Blueprint("recommend", __name__)
 @recommend_bp.route("/recommend", methods=["POST"])
 def recommend_api():
     """
-    Accept either:
-      { "grades": {"CS103": 90, ...} }
-    or:
-      { "capabilities": {"Math": 0.9, ...} }
+    Required fields:
+      "grades":             {course: grade (0-100)}  — student course grades
+      "top_comment":        str                       — top community comment
+      "correct_answers":    [str, ...]                — correct quiz answer strings
+      "problem_type_ranks": {type: count}             — problems solved per type
+                            (raw platform tags supported: "dp", "pwn", etc.)
 
-    Optional LLM signal fields (any combination):
-      "top_comment":          str              — community comment text
-      "correct_answers":      [str, ...]       — correct quiz answer strings
-      "problem_type_ranks":   {"Graph": 120}   — problem type → count/rank
-
-    Optional tuning:
-      "ml_weight":  float (default 0.60)  — weight for ML in soft voting
-                    LLM weight = 1 - ml_weight
+    All four fields are required. The system is designed for students who have
+    completed at least two years and have activity across all signal sources.
     """
     data = request.get_json(silent=True)
 
-    if not data or ("grades" not in data and "capabilities" not in data):
-        return jsonify({"status": "error", "message": "Missing 'grades' or 'capabilities' field"}), 400
+    if not data:
+        return jsonify({"status": "error", "message": "Request body is empty"}), 400
+
+    # All four signals are required
+    missing = []
+    if "grades" not in data and "capabilities" not in data:
+        missing.append("grades")
+    if not data.get("top_comment", "").strip():
+        missing.append("top_comment")
+    if not data.get("correct_answers"):
+        missing.append("correct_answers")
+    if not data.get("problem_type_ranks"):
+        missing.append("problem_type_ranks")
+
+    if missing:
+        return jsonify({
+            "status": "error",
+            "message": f"Missing required fields: {', '.join(missing)}",
+            "required": ["grades", "top_comment", "correct_answers", "problem_type_ranks"]
+        }), 400
 
     # ── Resolve capability vector ─────────────────────────────────────────────
     grades = None
@@ -87,13 +101,9 @@ def recommend_api():
 
     has_llm_signal = bool(top_comment or correct_answers or problem_type_ranks)
 
-    # Dynamic ml_weight: more signals = more trust in LLM = lower ml_weight
-    signal_count = sum([
-        1 if top_comment else 0,
-        1 if correct_answers else 0,
-        1 if problem_type_ranks else 0,
-    ])
-    ml_weight = {0: 1.0, 1: 0.75, 2: 0.60, 3: 0.50}[signal_count]
+    # All 3 LLM signals are always present.
+    # LLM weight > ML weight because ML is trained on synthetic data.
+    ml_weight = 0.40
 
     llm_scores: dict[str, float] = {}
     llm_signal_used: list[str]   = []
