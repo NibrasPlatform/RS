@@ -144,10 +144,10 @@ Signals are combined via **weighted average** — only provided signals are incl
 
 ```
 Default weights:
-  quiz:             35%
-  community:        30%
-  grades:           20%
-  problem_solving:  15%
+  quiz:             25%
+  community:        25%
+  grades:           25%
+  problem_solving:  25%
 ```
 
 ---
