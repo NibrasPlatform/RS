@@ -55,24 +55,6 @@ def recommend_api():
             "required": ["grades", "top_comment", "correct_answers", "problem_type_ranks"]
         }), 400
 
-    # ── Community engagement fields (optional, default to 0) ──────────────────
-    upvotes          = data.get("upvotes", 0)
-    accepted_answers = data.get("accepted_answers", 0)
-
-    if not isinstance(upvotes, (int, float)) or upvotes < 0:
-        return jsonify({
-            "status": "error",
-            "message": "'upvotes' must be a non-negative integer"
-        }), 400
-    if not isinstance(accepted_answers, (int, float)) or accepted_answers < 0:
-        return jsonify({
-            "status": "error",
-            "message": "'accepted_answers' must be a non-negative integer"
-        }), 400
-
-    upvotes          = int(upvotes)
-    accepted_answers = int(accepted_answers)
-
     # ── Resolve capability vector ─────────────────────────────────────────────
     grades = None
 
@@ -136,8 +118,6 @@ def recommend_api():
             problem_type_ranks=problem_type_ranks if problem_type_ranks else None,
             grades=grades,
             recommended_tracks=track_names,
-            upvotes=upvotes,
-            accepted_answers=accepted_answers,
         )
         if top_comment:        llm_signal_used.append("community_comment")
         if correct_answers:    llm_signal_used.append("quiz_answers")
@@ -229,11 +209,6 @@ def recommend_api():
     # ── Build response ────────────────────────────────────────────────────────
     top = final_recommendations[0] if final_recommendations else {}
 
-    from llm_scorer import compute_engagement_points, engagement_to_boost
-    engagement_points = compute_engagement_points(
-        upvotes=upvotes, accepted_answers=accepted_answers
-    )
-
     response = {
         "student_summary": {
             "strengths":      ml_result["student_strengths"],
@@ -245,16 +220,6 @@ def recommend_api():
             "why":       (top.get("explanation") or {}).get("summary"),
         },
         "recommendations": final_recommendations,
-        "community_engagement": {
-            "upvotes":          upvotes,
-            "accepted_answers": accepted_answers,
-            "points":           engagement_points,
-            "boost_applied":    engagement_to_boost(engagement_points),
-            "breakdown": {
-                "from_upvotes":          upvotes * 1,
-                "from_accepted_answers": accepted_answers * 10,
-            },
-        },
         "meta": {
             "scoring_method":   scoring_method,
             "ml_weight":        ml_weight if has_llm_signal else 1.0,
