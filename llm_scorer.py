@@ -258,82 +258,21 @@ def _parse_track_scores(raw: str) -> dict[str, float]:
         return _zero_track_scores()
 
 
-# ─── Community engagement scoring ─────────────────────────────────────────────
-# Points system:
-#   +1  per upvote received on a comment
-#   +10 per accepted answer by an instructor
-#
-# The raw point total is converted to an engagement_boost (0.0–0.5) that
-# amplifies the LLM's content-based community score.
-
-def compute_engagement_points(
-    upvotes: int = 0,
-    accepted_answers: int = 0,
-) -> int:
-    """
-    Calculate total community engagement points for a student.
-
-    Scoring rules:
-        - Each upvoted comment:    +1 point
-        - Each instructor-accepted answer: +10 points
-
-    Args:
-        upvotes:          Total upvotes received across all comments.
-        accepted_answers: Total answers accepted by instructors.
-
-    Returns:
-        Integer point total.
-    """
-    return int(upvotes) * 1 + int(accepted_answers) * 10
-
-
-def engagement_to_boost(points: int) -> float:
-    """
-    Convert raw engagement points to a score boost multiplier (0.0–0.5).
-
-    Uses a logarithmic scale so early points matter more and the boost
-    saturates gracefully for very active students.
-
-        boost = 0.5 × log(1 + points) / log(1 + MAX_POINTS)
-
-    MAX_POINTS = 100  (≈ 10 accepted answers or 100 upvotes)
-
-    Returns a float in [0.0, 0.5].
-    """
-    import math
-    if points <= 0:
-        return 0.0
-    MAX_POINTS = 100
-    boost = 0.5 * math.log(1 + points) / math.log(1 + MAX_POINTS)
-    return round(min(boost, 0.5), 4)
-
-
 # ─── 1. Community signal scorer ────────────────────────────────────────────────
 
 def get_community_scores(
     top_comment: str,
     recommended_tracks: list[str] | None = None,
-    upvotes: int = 0,
-    accepted_answers: int = 0,
 ) -> dict[str, float]:
     """
-    Score a student's community activity against each CS track (0.0–1.0).
-
-    Combines two signals:
-      1. Content signal  — LLM reads the comment text and scores each track.
-      2. Engagement boost — upvotes (+1 pt each) and accepted answers (+10 pts each)
-         amplify the content scores via a logarithmic boost (max +0.5).
-
-    Final score per track = min(content_score × (1 + boost), 1.0)
+    Score a student's top community comment against each CS track (0.0–1.0).
 
     Args:
         top_comment:         Free-text comment from the community feature.
         recommended_tracks:  If provided, scores for unrelated tracks are zeroed.
-        upvotes:             Total upvotes received on the student's comments.
-        accepted_answers:    Total answers accepted by instructors.
 
     Returns:
-        {track_name: score (0.0–1.0)} for all TRACKS.
+        {track_name: score} for all TRACKS.
     """
     if not top_comment or not top_comment.strip():
         logger.warning("Empty comment; returning zero scores.")
@@ -342,32 +281,12 @@ def get_community_scores(
     if client is None:
         return _zero_track_scores()
 
-    # ── Engagement points & boost ──────────────────────────────────────────────
-    points = compute_engagement_points(upvotes=upvotes, accepted_answers=accepted_answers)
-    boost  = engagement_to_boost(points)
-
-    logger.info(
-        "Community engagement → upvotes=%d, accepted=%d, points=%d, boost=%.4f",
-        upvotes, accepted_answers, points, boost,
-    )
-
-    # ── Build LLM prompt ───────────────────────────────────────────────────────
     relevance_note = ""
     if recommended_tracks:
         relevance_note = f"""
 The model already recommended these tracks: {', '.join(recommended_tracks)}.
 - If the comment is unrelated to these tracks → return all scores = 0.
 - Only boost tracks the comment clearly signals.
-"""
-
-    engagement_note = ""
-    if points > 0:
-        engagement_note = f"""
-Student engagement context:
-  - This comment received {upvotes} upvote(s) from peers.
-  - This student had {accepted_answers} answer(s) accepted by instructors.
-  - High engagement indicates the comment is genuinely insightful and on-topic.
-  - Factor this into your confidence when assigning scores (higher engagement → lean toward higher scores for relevant tracks).
 """
 
     track_list = "\n".join(f"- {t}" for t in TRACKS)
@@ -381,7 +300,7 @@ Rules:
 - Do NOT assign 1.0 unless extremely certain.
 - If the comment is irrelevant, spam, or has no academic signal → all scores = 0.
 - Output valid JSON only. No explanation, no markdown.
-{relevance_note}{engagement_note}
+{relevance_note}
 Tracks:
 {track_list}
 
@@ -389,21 +308,7 @@ Student comment:
 {top_comment}"""
 
     raw = _call_openai(prompt)
-    if not raw:
-        return _zero_track_scores()
-
-    content_scores = _parse_track_scores(raw)
-
-    # ── Apply engagement boost ─────────────────────────────────────────────────
-    if boost > 0:
-        boosted = {
-            track: round(min(score * (1 + boost), 1.0), 4)
-            for track, score in content_scores.items()
-        }
-        logger.info("Applied engagement boost of %.4f to community scores.", boost)
-        return boosted
-
-    return content_scores
+    return _parse_track_scores(raw) if raw else _zero_track_scores()
 
 
 # ─── 2. Quiz answer analyzer ───────────────────────────────────────────────────
@@ -601,21 +506,15 @@ def get_llm_track_scores(
     grades: dict[str, float] | None = None,
     recommended_tracks: list[str] | None = None,
     weights: dict[str, float] | None = None,
-    upvotes: int = 0,
-    accepted_answers: int = 0,
 ) -> dict[str, float]:
     """
     Aggregate all LLM-based signals into a single per-track score (0.0–1.0).
 
     Signals:
-        community (0.30) — comment text + engagement boost (upvotes & accepted answers)
+        community (0.30) — comment text
         quiz      (0.35) — correct quiz answers
         problem   (0.15) — problem solving ranks
         grades    (0.20) — course history interpreted in context
-
-    Community engagement points:
-        +1  per upvote received on a comment
-        +10 per answer accepted by an instructor
 
     Each signal is scored independently then combined via weighted average.
     Only signals that are provided are included — weights are renormalized.
@@ -631,12 +530,7 @@ def get_llm_track_scores(
     scores_list: list[tuple[dict, float]] = []
 
     if top_comment and top_comment.strip():
-        community = get_community_scores(
-            top_comment,
-            recommended_tracks,
-            upvotes=upvotes,
-            accepted_answers=accepted_answers,
-        )
+        community = get_community_scores(top_comment, recommended_tracks)
         scores_list.append((community, w["community"]))
         logger.info("Community signal collected.")
 
@@ -677,3 +571,131 @@ def get_llm_track_scores(
         )
 
     return aggregated
+
+# ─── Student-facing XAI explanation ───────────────────────────────────────────
+
+def explain_recommendation_to_student(
+    track_name: str,
+    grades: dict[str, float],
+    top_comment: str,
+    correct_answers: list[str],
+    problem_type_ranks: dict[str, int | float],
+    ml_score: float,
+    llm_score: float,
+    final_score: float,
+) -> dict:
+    """
+    Generate a student-facing explanation for why a track was recommended.
+
+    Covers all four signals:
+      1. Grades      — which courses pointed to this track and why
+      2. Comment     — what in the comment signals this track
+      3. Quiz        — which concepts the student demonstrated
+      4. Competitive — which problem types drove the signal
+
+    Returns:
+        {
+            "summary":      str,   — one paragraph overall explanation
+            "grades":       str,   — grades signal explanation
+            "comment":      str,   — community comment explanation
+            "quiz":         str,   — quiz answers explanation
+            "competitive":  str,   — problem solving explanation
+            "confidence":   str,   — why the system is confident/uncertain
+        }
+    """
+    from mapper import COURSE_CAPABILITY_WEIGHTS
+
+    # Build course context
+    course_lines = []
+    for course, grade in grades.items():
+        norm = course.replace(" ", "").upper()
+        caps = COURSE_CAPABILITY_WEIGHTS.get(norm, {})
+        focus = ", ".join(
+            f"{cap}" for cap, _ in sorted(caps.items(), key=lambda x: -x[1])[:2]
+        ) if caps else "general CS"
+        course_lines.append(f"  - {course}: {int(grade)}/100 (focuses on {focus})")
+    courses_block = "\n".join(course_lines) if course_lines else "  No courses provided"
+
+    # Build quiz context
+    quiz_block = "\n".join(f"  {i+1}. {a}" for i, a in enumerate(correct_answers[:5])) \
+        if correct_answers else "  No quiz answers provided"
+
+    # Build problem solving context
+    if problem_type_ranks:
+        total = sum(problem_type_ranks.values()) or 1
+        prob_lines = [
+            f"  - {ptype}: {count} problems ({count/total*100:.0f}%)"
+            for ptype, count in sorted(problem_type_ranks.items(), key=lambda x: -x[1])[:5]
+        ]
+        prob_block = "\n".join(prob_lines)
+    else:
+        prob_block = "  No problem solving data provided"
+
+    # Confidence description
+    if final_score >= 0.60:
+        conf_level = "very high"
+    elif final_score >= 0.40:
+        conf_level = "high"
+    elif final_score >= 0.25:
+        conf_level = "moderate"
+    else:
+        conf_level = "low"
+
+    prompt = f"""You are an academic advisor explaining to a CS student why they were recommended the "{track_name}" track.
+
+You have access to four signals about this student:
+
+1. GRADES:
+{courses_block}
+
+2. COMMUNITY COMMENT:
+"{top_comment}"
+
+3. CORRECT QUIZ ANSWERS:
+{quiz_block}
+
+4. COMPETITIVE PROGRAMMING (problems solved):
+{prob_block}
+
+SCORES:
+- ML model score: {ml_score*100:.1f}% (based on grades pattern)
+- LLM signal score: {llm_score*100:.1f}% (based on comment + quiz + problems)
+- Final blended score: {final_score*100:.1f}%
+- Confidence level: {conf_level}
+
+Write a personalized explanation for the student covering these 6 parts.
+Be specific — reference actual courses, actual quiz answers, actual problem types.
+Use friendly, encouraging language. Keep each part to 2-3 sentences max.
+
+Return ONLY valid JSON (no markdown, no extra text):
+{{
+  "summary": "Overall 2-3 sentence explanation of why {track_name} fits this student",
+  "grades": "Which specific courses and grades pointed to this track and why",
+  "comment": "What specifically in their comment signals {track_name}",
+  "quiz": "Which concepts their correct answers demonstrated that align with {track_name}",
+  "competitive": "Which problem types they solve most and how that maps to {track_name}",
+  "confidence": "Why the system is {conf_level}ly confident in this recommendation"
+}}"""
+
+    raw = _call_openai(prompt)
+    if not raw:
+        return {
+            "summary":     f"You were recommended for {track_name} based on your overall profile.",
+            "grades":      "Your course grades show strong alignment with this track.",
+            "comment":     "Your community activity signals interest in this area.",
+            "quiz":        "Your quiz performance demonstrates relevant knowledge.",
+            "competitive": "Your problem-solving activity supports this recommendation.",
+            "confidence":  f"Confidence level: {conf_level}.",
+        }
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {
+            "summary":     f"You were recommended for {track_name} based on your overall profile.",
+            "grades":      "Your course grades show strong alignment with this track.",
+            "comment":     "Your community activity signals interest in this area.",
+            "quiz":        "Your quiz performance demonstrates relevant knowledge.",
+            "competitive": "Your problem-solving activity supports this recommendation.",
+            "confidence":  f"Confidence level: {conf_level}.",
+        }
