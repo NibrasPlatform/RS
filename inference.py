@@ -78,6 +78,7 @@ def explain_recommendation(
             "score":      round(score, 2),
             "level":      _cap_level(score),
         }
+
         for cap, score in sorted(capability_vector.items(), key=lambda x: -x[1])
         if score > 0
     ][:4]
@@ -143,6 +144,236 @@ def explain_recommendation(
         "top_capabilities": top_capabilities,
         "top_courses":      top_courses,
         "track_fit":        track_fit,
+    }
+
+
+# ─── XAI Helpers for Full Explanation ─────────────────────────────────────────
+
+def _explain_rejection(
+    track: str,
+    capability_vector: dict,
+    ml_scores: dict,
+    llm_scores: dict,
+) -> str:
+    """Explain why a track was not selected as top recommendation."""
+    ml_score = ml_scores.get(track, 0.0)
+    llm_score = llm_scores.get(track, 0.0)
+    
+    track_caps = TRACK_PROFILES.get(track, {})
+    
+    # Find weak capabilities for this track
+    weak_caps = []
+    for cap, required in track_caps.items():
+        student_level = capability_vector.get(cap, 0.0)
+        if student_level < required * 0.70:
+            weak_caps.append(cap)
+    
+    reasons = []
+    
+    if ml_score < 0.10:
+        reasons.append("low ML probability")
+    
+    if llm_score < 0.30:
+        reasons.append("weak LLM assessment")
+    
+    if weak_caps:
+        reasons.append(f"insufficient capabilities in {', '.join(weak_caps[:2])}")
+    
+    if not reasons:
+        reasons.append("lower overall fit compared to selected tracks")
+    
+    return "This track was not selected due to: " + "; ".join(reasons) + "."
+
+
+def _explain_llm_influence(
+    ml_scores: dict,
+    llm_scores: dict,
+    final_scores: dict,
+) -> dict:
+    """Explain how LLM scores influenced the final ranking."""
+    promoted = []
+    demoted = []
+    
+    # Compare ML-only ranking vs final ranking
+    ml_ranking = sorted(ml_scores.items(), key=lambda x: -x[1])
+    final_ranking = sorted(final_scores.items(), key=lambda x: -x[1])
+    
+    for i, (track, final_score) in enumerate(final_ranking):
+        ml_rank = next(j for j, (t, _) in enumerate(ml_ranking) if t == track)
+        llm_score = llm_scores.get(track, 0.0)
+        
+        if i < ml_rank:  # Track moved up
+            if llm_score > ml_scores.get(track, 0):
+                promoted.append({
+                    "track": track,
+                    "moved_from": ml_rank + 1,
+                    "moved_to": i + 1,
+                    "llm_score": round(llm_score, 4),
+                    "reason": "LLM strongly endorsed this track"
+                })
+        elif i > ml_rank:  # Track moved down
+            if llm_score < ml_scores.get(track, 0):
+                demoted.append({
+                    "track": track,
+                    "moved_from": ml_rank + 1,
+                    "moved_to": i + 1,
+                    "llm_score": round(llm_score, 4),
+                    "reason": "LLM assessment was lower than ML prediction"
+                })
+    
+    return {
+        "promoted_by_llm": promoted[:3],
+        "demoted_by_llm": demoted[:3],
+        "overall_influence": "High" if (promoted or demoted) else "Low"
+    }
+
+
+def _explain_confidence(
+    final_score: float,
+    ml_scores: dict,
+    llm_scores: dict,
+) -> dict:
+    """Explain the confidence level of the recommendation."""
+    # Calculate agreement between ML and LLM
+    top_track = max(final_scores.items(), key=lambda x: x[1])[0]
+    ml_score = ml_scores.get(top_track, 0.0)
+    llm_score = llm_scores.get(top_track, 0.0)
+    
+    # Confidence factors
+    high_final_score = final_score >= 0.70
+    strong_ml = ml_score >= 0.50
+    strong_llm = llm_score >= 0.60
+    agreement = abs(ml_score - llm_score) < 0.20
+    
+    if high_final_score and strong_ml and strong_llm and agreement:
+        level = "High"
+        explanation = (
+            "The model is highly confident in this recommendation. "
+            "Both ML and LLM assessments strongly support this track, "
+            "and there is good agreement between the two signals."
+        )
+    elif high_final_score or (strong_ml and strong_llm):
+        level = "Moderate"
+        explanation = (
+            "The model has moderate confidence. "
+            "The final score is strong, but there may be some disagreement "
+            "between ML and LLM signals, or one signal is weaker than the other."
+        )
+    else:
+        level = "Low"
+        explanation = (
+            "The model has low confidence in this recommendation. "
+            "The final score is relatively low, suggesting that this track "
+            "may not be the best fit. Consider providing more input data "
+            "(e.g., community comment, quiz answers) for better accuracy."
+        )
+    
+    return {
+        "level": level,
+        "final_score": round(final_score, 4),
+        "ml_score": round(ml_score, 4),
+        "llm_score": round(llm_score, 4),
+        "explanation": explanation
+    }
+
+
+def _explain_feature_importance(
+    capability_vector: dict,
+    ml_scores: dict,
+) -> dict:
+    """Explain which features (capabilities) were most important."""
+    # Sort capabilities by value
+    sorted_caps = sorted(capability_vector.items(), key=lambda x: -x[1])
+    
+    top_features = []
+    for cap, value in sorted_caps[:5]:
+        if value > 0:
+            # Determine impact level
+            if value >= 0.85:
+                impact = "Very High"
+            elif value >= 0.70:
+                impact = "High"
+            elif value >= 0.50:
+                impact = "Medium"
+            else:
+                impact = "Low"
+            
+            top_features.append({
+                "capability": cap,
+                "value": round(value, 4),
+                "impact": impact
+            })
+    
+    # Calculate overall profile strength
+    avg_capability = np.mean([v for v in capability_vector.values() if v > 0]) if capability_vector else 0
+    profile_strength = (
+        "Strong" if avg_capability >= 0.70
+        else "Moderate" if avg_capability >= 0.50
+        else "Developing"
+    )
+    
+    return {
+        "top_features": top_features,
+        "profile_strength": profile_strength,
+        "avg_capability_score": round(avg_capability, 4),
+        "explanation": (
+            f"Your profile shows {profile_strength.lower()} capabilities overall. "
+            f"The most influential factors in the recommendation are your "
+            f"{', '.join([f['capability'] for f in top_features[:3]])} capabilities."
+        )
+    }
+
+
+def explain_full_recommendation(
+    track_name: str,
+    capability_vector: dict,
+    grades: dict,
+    course_weights: dict,
+    ml_scores: dict,
+    llm_scores: dict,
+    final_scores: dict,
+) -> dict:
+    """
+    Full XAI explanation covering:
+    1. Why this track was chosen
+    2. Why other tracks were rejected
+    3. How LLM influenced the final ranking
+    4. Confidence level explanation
+    5. Feature importance breakdown
+    """
+    
+    # 1. Current track explanation (existing)
+    track_explanation = explain_recommendation(
+        track_name, capability_vector, grades, course_weights
+    )
+    
+    # 2. Why other tracks were rejected
+    other_tracks = []
+    for track, score in sorted(final_scores.items(), key=lambda x: -x[1]):
+        if track != track_name:
+            other_tracks.append({
+                "track": track,
+                "final_score": score,
+                "ml_score": ml_scores.get(track, 0),
+                "llm_score": llm_scores.get(track, 0),
+                "reason": _explain_rejection(track, capability_vector, ml_scores, llm_scores)
+            })
+    
+    # 3. LLM influence
+    llm_influence = _explain_llm_influence(ml_scores, llm_scores, final_scores)
+    
+    # 4. Confidence level
+    confidence = _explain_confidence(final_scores[track_name], ml_scores, llm_scores)
+    
+    # 5. Feature importance
+    feature_importance = _explain_feature_importance(capability_vector, ml_scores)
+    
+    return {
+        "track_explanation": track_explanation,
+        "rejected_tracks": other_tracks[:3],  # top 3 rejected
+        "llm_influence": llm_influence,
+        "confidence": confidence,
+        "feature_importance": feature_importance
     }
 
 
