@@ -520,10 +520,10 @@ def get_llm_track_scores(
     Only signals that are provided are included — weights are renormalized.
     """
     default_weights = {
-        "community":       0.30,
-        "quiz":            0.35,
-        "problem_solving": 0.15,
-        "grades":          0.20,
+        "community":       0.25,
+        "quiz":            0.25,
+        "problem_solving": 0.25,
+        "grades":          0.25,
     }
     w = {**default_weights, **(weights or {})}
 
