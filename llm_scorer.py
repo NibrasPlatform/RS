@@ -258,21 +258,82 @@ def _parse_track_scores(raw: str) -> dict[str, float]:
         return _zero_track_scores()
 
 
+# ─── Community engagement scoring ─────────────────────────────────────────────
+# Points system:
+#   +1  per upvote received on a comment
+#   +10 per accepted answer by an instructor
+#
+# The raw point total is converted to an engagement_boost (0.0–0.5) that
+# amplifies the LLM's content-based community score.
+
+def compute_engagement_points(
+    upvotes: int = 0,
+    accepted_answers: int = 0,
+) -> int:
+    """
+    Calculate total community engagement points for a student.
+
+    Scoring rules:
+        - Each upvoted comment:    +1 point
+        - Each instructor-accepted answer: +10 points
+
+    Args:
+        upvotes:          Total upvotes received across all comments.
+        accepted_answers: Total answers accepted by instructors.
+
+    Returns:
+        Integer point total.
+    """
+    return int(upvotes) * 1 + int(accepted_answers) * 10
+
+
+def engagement_to_boost(points: int) -> float:
+    """
+    Convert raw engagement points to a score boost multiplier (0.0–0.5).
+
+    Uses a logarithmic scale so early points matter more and the boost
+    saturates gracefully for very active students.
+
+        boost = 0.5 × log(1 + points) / log(1 + MAX_POINTS)
+
+    MAX_POINTS = 100  (≈ 10 accepted answers or 100 upvotes)
+
+    Returns a float in [0.0, 0.5].
+    """
+    import math
+    if points <= 0:
+        return 0.0
+    MAX_POINTS = 100
+    boost = 0.5 * math.log(1 + points) / math.log(1 + MAX_POINTS)
+    return round(min(boost, 0.5), 4)
+
+
 # ─── 1. Community signal scorer ────────────────────────────────────────────────
 
 def get_community_scores(
     top_comment: str,
     recommended_tracks: list[str] | None = None,
+    upvotes: int = 0,
+    accepted_answers: int = 0,
 ) -> dict[str, float]:
     """
-    Score a student's top community comment against each CS track (0.0–1.0).
+    Score a student's community activity against each CS track (0.0–1.0).
+
+    Combines two signals:
+      1. Content signal  — LLM reads the comment text and scores each track.
+      2. Engagement boost — upvotes (+1 pt each) and accepted answers (+10 pts each)
+         amplify the content scores via a logarithmic boost (max +0.5).
+
+    Final score per track = min(content_score × (1 + boost), 1.0)
 
     Args:
         top_comment:         Free-text comment from the community feature.
         recommended_tracks:  If provided, scores for unrelated tracks are zeroed.
+        upvotes:             Total upvotes received on the student's comments.
+        accepted_answers:    Total answers accepted by instructors.
 
     Returns:
-        {track_name: score} for all TRACKS.
+        {track_name: score (0.0–1.0)} for all TRACKS.
     """
     if not top_comment or not top_comment.strip():
         logger.warning("Empty comment; returning zero scores.")
@@ -281,12 +342,32 @@ def get_community_scores(
     if client is None:
         return _zero_track_scores()
 
+    # ── Engagement points & boost ──────────────────────────────────────────────
+    points = compute_engagement_points(upvotes=upvotes, accepted_answers=accepted_answers)
+    boost  = engagement_to_boost(points)
+
+    logger.info(
+        "Community engagement → upvotes=%d, accepted=%d, points=%d, boost=%.4f",
+        upvotes, accepted_answers, points, boost,
+    )
+
+    # ── Build LLM prompt ───────────────────────────────────────────────────────
     relevance_note = ""
     if recommended_tracks:
         relevance_note = f"""
 The model already recommended these tracks: {', '.join(recommended_tracks)}.
 - If the comment is unrelated to these tracks → return all scores = 0.
 - Only boost tracks the comment clearly signals.
+"""
+
+    engagement_note = ""
+    if points > 0:
+        engagement_note = f"""
+Student engagement context:
+  - This comment received {upvotes} upvote(s) from peers.
+  - This student had {accepted_answers} answer(s) accepted by instructors.
+  - High engagement indicates the comment is genuinely insightful and on-topic.
+  - Factor this into your confidence when assigning scores (higher engagement → lean toward higher scores for relevant tracks).
 """
 
     track_list = "\n".join(f"- {t}" for t in TRACKS)
@@ -300,7 +381,7 @@ Rules:
 - Do NOT assign 1.0 unless extremely certain.
 - If the comment is irrelevant, spam, or has no academic signal → all scores = 0.
 - Output valid JSON only. No explanation, no markdown.
-{relevance_note}
+{relevance_note}{engagement_note}
 Tracks:
 {track_list}
 
@@ -308,7 +389,21 @@ Student comment:
 {top_comment}"""
 
     raw = _call_openai(prompt)
-    return _parse_track_scores(raw) if raw else _zero_track_scores()
+    if not raw:
+        return _zero_track_scores()
+
+    content_scores = _parse_track_scores(raw)
+
+    # ── Apply engagement boost ─────────────────────────────────────────────────
+    if boost > 0:
+        boosted = {
+            track: round(min(score * (1 + boost), 1.0), 4)
+            for track, score in content_scores.items()
+        }
+        logger.info("Applied engagement boost of %.4f to community scores.", boost)
+        return boosted
+
+    return content_scores
 
 
 # ─── 2. Quiz answer analyzer ───────────────────────────────────────────────────
@@ -506,15 +601,21 @@ def get_llm_track_scores(
     grades: dict[str, float] | None = None,
     recommended_tracks: list[str] | None = None,
     weights: dict[str, float] | None = None,
+    upvotes: int = 0,
+    accepted_answers: int = 0,
 ) -> dict[str, float]:
     """
     Aggregate all LLM-based signals into a single per-track score (0.0–1.0).
 
     Signals:
-        community (0.30) — comment text
+        community (0.30) — comment text + engagement boost (upvotes & accepted answers)
         quiz      (0.35) — correct quiz answers
         problem   (0.15) — problem solving ranks
         grades    (0.20) — course history interpreted in context
+
+    Community engagement points:
+        +1  per upvote received on a comment
+        +10 per answer accepted by an instructor
 
     Each signal is scored independently then combined via weighted average.
     Only signals that are provided are included — weights are renormalized.
@@ -530,7 +631,12 @@ def get_llm_track_scores(
     scores_list: list[tuple[dict, float]] = []
 
     if top_comment and top_comment.strip():
-        community = get_community_scores(top_comment, recommended_tracks)
+        community = get_community_scores(
+            top_comment,
+            recommended_tracks,
+            upvotes=upvotes,
+            accepted_answers=accepted_answers,
+        )
         scores_list.append((community, w["community"]))
         logger.info("Community signal collected.")
 
