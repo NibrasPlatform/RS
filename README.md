@@ -73,9 +73,11 @@ Students often choose their CS specialization based on peer influence or incompl
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `grades` | `{course: grade}` | ✅ | Course grades (0–100) |
-| `top_comment` | `string` | ❌ | Student's top community comment |
-| `correct_answers` | `[string]` | ❌ | Correct quiz answers (one per item) |
-| `problem_type_ranks` | `{type: count}` | ❌ | Problems solved per type — raw platform tags supported |
+| `top_comment` | `string` | ✅ | Student's top community comment |
+| `correct_answers` | `[string]` | ✅ | Correct quiz answers (one per item) |
+| `problem_type_ranks` | `{type: count}` | ✅ | Problems solved per type — raw platform tags supported |
+
+> All four fields are required. The system is designed for students who have completed at least two years and have activity across all signal sources.
 
 ### Supported platform tags (auto-normalized)
 
@@ -150,16 +152,18 @@ Default weights:
 
 ---
 
-### Step 4 — Dynamic ML Weight
+### Step 4 — ML/LLM Weight
 
-The ML/LLM balance is determined automatically by how many LLM signals are present:
+Fixed at **ML 40% / LLM 60%** because:
+- ML model is trained on synthetic data → limited confidence
+- LLM has real CS domain knowledge → higher trust
 
-| Signals provided | ML weight | LLM weight |
-|-----------------|-----------|------------|
-| 0 (grades only) | 100% | 0% |
-| 1 signal | 75% | 25% |
-| 2 signals | 60% | 40% |
-| 3 signals | 50% | 50% |
+```
+ml_weight  = 0.40
+llm_weight = 0.60
+```
+
+> When real student data is collected, this ratio should be re-evaluated based on which signal was more accurate.
 
 ---
 
@@ -169,7 +173,7 @@ The ML/LLM balance is determined automatically by how many LLM signals are prese
 if llm_score == 0:
     final = ml_score × 0.6     # confidence discount — no LLM confirmation
 else:
-    final = ml_weight × ml_score + llm_weight × llm_score
+    final = 0.40 × ml_score + 0.60 × llm_score
 ```
 
 Tracks below `final_score < 0.05` are filtered out.
@@ -215,8 +219,8 @@ Per track:
   "student_summary": { "strengths": ["AI", "Math", "Data"] },
   "meta": {
     "scoring_method": "soft_voting",
-    "ml_weight": 0.5,
-    "llm_weight": 0.5,
+    "ml_weight": 0.4,
+    "llm_weight": 0.6,
     "llm_signals_used": ["community_comment", "quiz_answers", "problem_solving", "grades"]
   }
 }
