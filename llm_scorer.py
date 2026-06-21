@@ -311,57 +311,55 @@ Student comment:
     return _parse_track_scores(raw) if raw else _zero_track_scores()
 
 
-# ─── 2. Quiz answer analyzer ───────────────────────────────────────────────────
+# ─── Competition rating normalization ─────────────────────────────────────────
+# Maps a platform's raw rating to a 0–1 "strength" score, so a high rank
+# amplifies the type-based competition signal and a low/unranked one doesn't
+# wipe it out. Used by get_competition_scores() below.
 
-def get_quiz_scores(correct_answers: list[str]) -> dict[str, float]:
+PLATFORM_RATING_SCALES: dict[str, tuple[float, float]] = {
+    "codeforces": (800, 3000),    # newbie → legendary grandmaster
+    "leetcode":   (1200, 3000),   # contest rating
+    "atcoder":    (0, 2800),
+    "topcoder":   (900, 3000),
+}
+
+
+def normalize_competition_rating(rating: dict | None) -> float:
     """
-    Analyze a student's correct quiz answers via NLU and return track scores.
+    Convert a competition rank/rating into a strength score in [0, 1].
 
-    The LLM acts as NLU: it infers what CS concepts each correct answer
-    demonstrates, then maps that understanding to track relevance scores.
+    Accepts either:
+      {"platform": "codeforces", "value": 1850}   — known platform, raw rating
+      {"percentile": 92}                          — generic rank percentile
+                                                      (works for CTFtime, custom
+                                                      leaderboards, etc.)
 
-    Args:
-        correct_answers: List of correct answer strings from quizzes
-                         e.g. ["O(n log n) because merge sort divides...",
-                               "A deadlock occurs when two processes..."]
-
-    Returns:
-        {track_name: score (0.0–1.0)} for all TRACKS.
+    Returns 0.5 (neutral) if rating is missing or unrecognized, so the signal
+    falls back to relying purely on problem-type proportions.
     """
-    if not correct_answers:
-        return _zero_track_scores()
+    if not rating:
+        return 0.5
 
-    answers_block = "\n".join(
-        f"{i+1}. {ans}" for i, ans in enumerate(correct_answers[:20])  # cap at 20
-    )
-    track_list = "\n".join(f"- {t}" for t in TRACKS)
+    if "percentile" in rating:
+        try:
+            return max(0.0, min(1.0, float(rating["percentile"]) / 100.0))
+        except (TypeError, ValueError):
+            return 0.5
 
-    prompt = f"""You are a CS education analyst performing NLU on student quiz answers.
+    platform = str(rating.get("platform", "")).lower().strip()
+    value    = rating.get("value")
 
-Step 1 – Understand the concepts demonstrated:
-  Read each correct answer and identify the CS concepts, skills, or knowledge areas shown.
+    if platform in PLATFORM_RATING_SCALES and value is not None:
+        try:
+            lo, hi = PLATFORM_RATING_SCALES[platform]
+            return max(0.0, min(1.0, (float(value) - lo) / (hi - lo)))
+        except (TypeError, ValueError):
+            return 0.5
 
-Step 2 – Map to tracks:
-  For each track below, assign a score (0.0 to 1.0) reflecting how strongly
-  the demonstrated concepts align with that track's focus.
-
-Rules:
-- Base scores ONLY on what the answers clearly demonstrate. Do not guess.
-- Use soft, continuous scoring. Multiple tracks can score high.
-- If answers show no clear signal for a track → score = 0.
-- Output valid JSON only: {{"track_name": score, ...}}. No explanation.
-
-Tracks:
-{track_list}
-
-Student's correct quiz answers:
-{answers_block}"""
-
-    raw = _call_openai(prompt)
-    return _parse_track_scores(raw) if raw else _zero_track_scores()
+    return 0.5
 
 
-# ─── 3. Problem-solving rank analyzer ─────────────────────────────────────────
+# ─── 3. Competition (problem-solving / CTF) rank analyzer ────────────────────
 
 def get_problem_solving_scores(
     problem_type_ranks: dict[str, int | float],
@@ -418,6 +416,34 @@ Tracks:
 
     raw = _call_openai(prompt)
     return _parse_track_scores(raw) if raw else _zero_track_scores()
+
+
+def get_competition_scores(
+    problem_type_ranks: dict[str, int | float],
+    rating: dict | None = None,
+) -> dict[str, float]:
+    """
+    Full competition signal: WHICH tracks the student's activity points to
+    (problem-type proportions, via get_problem_solving_scores) scaled by
+    HOW STRONG their actual rank/rating is (Codeforces rating, CTF rank, etc).
+
+    A high rating amplifies the type-based signal (up to 1.0x); a low or
+    missing rating still keeps half its weight, so the direction of the
+    signal doesn't get wiped out — only its confidence changes.
+
+    Args:
+        problem_type_ranks: {problem_type: count} — same as before.
+        rating: {"platform": "codeforces", "value": 1850} or
+                {"percentile": 92} or None.
+
+    Returns:
+        {track_name: score (0.0–1.0)} for all TRACKS.
+    """
+    base_scores = get_problem_solving_scores(problem_type_ranks)
+    strength = normalize_competition_rating(rating)
+    multiplier = 0.5 + 0.5 * strength  # ranges 0.5x (no/low rating) to 1.0x (top rating)
+
+    return {track: round(score * multiplier, 4) for track, score in base_scores.items()}
 
 
 
@@ -497,12 +523,81 @@ Tracks:
     return _parse_track_scores(raw) if raw else _zero_track_scores()
 
 
-# ─── 5. Aggregate LLM scorer (combines all signals) ───────────────────────────
+# ─── 5. Project grades analyzer ───────────────────────────────────────────────
+
+def get_project_scores(
+    project_grades: dict[str, float],
+    other_signals_summary: str = "",
+) -> dict[str, float]:
+    """
+    Score a student's project grades against each track.
+
+    Project titles are free-form (not a fixed catalog like courses), so this
+    pulls each title's capability focus from PROJECT_CAPABILITY_WEIGHTS
+    (auto-populated on first sight — see mapper.project_grades_to_capabilities)
+    and lets the LLM reason about what the grade + domain combination signals.
+
+    Args:
+        project_grades:         {project_title: grade (0-100)}
+        other_signals_summary:  Optional one-line context from other signals.
+
+    Returns:
+        {track_name: score (0.0–1.0)} for all TRACKS.
+    """
+    if not project_grades:
+        return _zero_track_scores()
+
+    from mapper import PROJECT_CAPABILITY_WEIGHTS  # late import
+
+    project_lines = []
+    for title, grade in project_grades.items():
+        caps = PROJECT_CAPABILITY_WEIGHTS.get(title.strip(), {})
+        focus = ", ".join(
+            f"{cap}({int(w*100)}%)" for cap, w in
+            sorted(caps.items(), key=lambda x: -x[1])[:3]
+        ) if caps else "unknown focus — infer from the title itself"
+        project_lines.append(f"  - \"{title}\": {int(grade)}/100  [{focus}]")
+
+    projects_block = "\n".join(project_lines)
+    track_list     = "\n".join(f"- {t}" for t in TRACKS)
+    context_note   = f"\nOther signals about this student: {other_signals_summary}" if other_signals_summary else ""
+
+    prompt = f"""You are a CS academic advisor analyzing a student's project work
+(graduation project / term projects), which the student usually chooses themselves
+within their domain of interest — making it a strong, intentional signal.
+
+For each project below, the focus areas (capabilities) are listed in brackets
+when known; otherwise infer the domain from the title.
+{context_note}
+
+Student's projects:
+{projects_block}
+
+A high grade on a self-chosen project in a domain is strong evidence of both
+interest in and capability for the matching track. A mediocre grade tempers
+that signal but doesn't erase the domain interest.
+
+For each track, assign a score (0.0 to 1.0) reflecting how strongly this
+project work points toward that track.
+
+Rules:
+- Use soft, continuous scoring. Multiple tracks can score high.
+- Output valid JSON only: {{"track_name": score, ...}}. No explanation.
+
+Tracks:
+{track_list}"""
+
+    raw = _call_openai(prompt)
+    return _parse_track_scores(raw) if raw else _zero_track_scores()
+
+
+# ─── 6. Aggregate LLM scorer (combines all signals) ───────────────────────────
 
 def get_llm_track_scores(
     top_comment: str = "",
-    correct_answers: list[str] | None = None,
-    problem_type_ranks: dict[str, int | float] | None = None,
+    project_grades: dict[str, float] | None = None,
+    competition_ranks: dict[str, int | float] | None = None,
+    competition_rating: dict | None = None,
     grades: dict[str, float] | None = None,
     recommended_tracks: list[str] | None = None,
     weights: dict[str, float] | None = None,
@@ -510,20 +605,33 @@ def get_llm_track_scores(
     """
     Aggregate all LLM-based signals into a single per-track score (0.0–1.0).
 
-    Signals:
-        community (0.30) — comment text
-        quiz      (0.35) — correct quiz answers
-        problem   (0.15) — problem solving ranks
-        grades    (0.20) — course history interpreted in context
+    Signals and default weights (see README for full rationale):
+        grades       (0.35) — course grade history, interpreted in context.
+                              Highest weight: broadest, most statistically
+                              reliable signal (many independent data points
+                              across years, already validated academically).
+        project      (0.30) — project/GP grades. Almost as reliable as
+                              grades — usually a self-chosen domain, so it's
+                              a strong direct signal — but typically just
+                              one or two data points, hence slightly lower.
+        competition  (0.20) — problem-solving / CTF activity, scaled by
+                              actual rank/rating. Objective and hard to fake,
+                              but optional/elective — not every student has
+                              this signal, and it's thin for non-algorithmic
+                              tracks (HCI, Visual Computing, Comp Bio).
+        community    (0.15) — top upvoted community comment. Useful as a
+                              confirmatory signal of personal interest, but
+                              least structured and easiest to be noisy/biased
+                              toward whichever topic happened to get upvoted.
 
     Each signal is scored independently then combined via weighted average.
     Only signals that are provided are included — weights are renormalized.
     """
     default_weights = {
-        "community":       0.25,
-        "quiz":            0.25,
-        "problem_solving": 0.25,
-        "grades":          0.25,
+        "grades":      0.35,
+        "project":     0.30,
+        "competition": 0.20,
+        "community":   0.15,
     }
     w = {**default_weights, **(weights or {})}
 
@@ -534,23 +642,23 @@ def get_llm_track_scores(
         scores_list.append((community, w["community"]))
         logger.info("Community signal collected.")
 
-    if correct_answers:
-        quiz = get_quiz_scores(correct_answers)
-        scores_list.append((quiz, w["quiz"]))
-        logger.info("Quiz signal collected.")
+    if competition_ranks:
+        comp = get_competition_scores(competition_ranks, rating=competition_rating)
+        scores_list.append((comp, w["competition"]))
+        logger.info("Competition signal collected.")
 
-    if problem_type_ranks:
-        ps = get_problem_solving_scores(problem_type_ranks)
-        scores_list.append((ps, w["problem_solving"]))
-        logger.info("Problem-solving signal collected.")
+    if project_grades:
+        proj = get_project_scores(project_grades)
+        scores_list.append((proj, w["project"]))
+        logger.info("Project signal collected.")
 
     if grades:
         # Build a one-line summary of other signals for context
         signals_parts = []
-        if top_comment:    signals_parts.append(f"comment: \"{top_comment[:80]}\"")
-        if correct_answers: signals_parts.append(f"{len(correct_answers)} correct quiz answers")
-        if problem_type_ranks:
-            top_prob = max(problem_type_ranks, key=problem_type_ranks.get)
+        if top_comment:      signals_parts.append(f"comment: \"{top_comment[:80]}\"")
+        if project_grades:   signals_parts.append(f"{len(project_grades)} project(s) graded")
+        if competition_ranks:
+            top_prob = max(competition_ranks, key=competition_ranks.get)
             signals_parts.append(f"most solved: {top_prob}")
         context = "; ".join(signals_parts) if signals_parts else ""
 
@@ -578,8 +686,9 @@ def explain_recommendation_to_student(
     track_name: str,
     grades: dict[str, float],
     top_comment: str,
-    correct_answers: list[str],
-    problem_type_ranks: dict[str, int | float],
+    project_grades: dict[str, float],
+    competition_ranks: dict[str, int | float],
+    competition_rating: dict | None,
     ml_score: float,
     llm_score: float,
     final_score: float,
@@ -589,21 +698,21 @@ def explain_recommendation_to_student(
 
     Covers all four signals:
       1. Grades      — which courses pointed to this track and why
-      2. Comment     — what in the comment signals this track
-      3. Quiz        — which concepts the student demonstrated
-      4. Competitive — which problem types drove the signal
+      2. Project     — which project(s) and grades signaled this track
+      3. Competition — which problem types + rank/rating drove the signal
+      4. Comment     — what in the comment signals this track
 
     Returns:
         {
             "summary":      str,   — one paragraph overall explanation
             "grades":       str,   — grades signal explanation
+            "project":      str,   — project signal explanation
+            "competition":  str,   — competition/CTF signal explanation
             "comment":      str,   — community comment explanation
-            "quiz":         str,   — quiz answers explanation
-            "competitive":  str,   — problem solving explanation
             "confidence":   str,   — why the system is confident/uncertain
         }
     """
-    from mapper import COURSE_CAPABILITY_WEIGHTS
+    from mapper import COURSE_CAPABILITY_WEIGHTS, PROJECT_CAPABILITY_WEIGHTS
 
     # Build course context
     course_lines = []
@@ -616,22 +725,40 @@ def explain_recommendation_to_student(
         course_lines.append(f"  - {course}: {int(grade)}/100 (focuses on {focus})")
     courses_block = "\n".join(course_lines) if course_lines else "  No courses provided"
 
-    # Build quiz context
-    quiz_block = "\n".join(f"  {i+1}. {a}" for i, a in enumerate(correct_answers[:5])) \
-        if correct_answers else "  No quiz answers provided"
+    # Build project context
+    project_lines = []
+    for title, grade in project_grades.items():
+        caps = PROJECT_CAPABILITY_WEIGHTS.get(title.strip(), {})
+        focus = ", ".join(
+            f"{cap}" for cap, _ in sorted(caps.items(), key=lambda x: -x[1])[:2]
+        ) if caps else "domain inferred from title"
+        project_lines.append(f"  - \"{title}\": {int(grade)}/100 (focuses on {focus})")
+    projects_block = "\n".join(project_lines) if project_lines else "  No project grades provided"
 
-    # Build problem solving context
-    if problem_type_ranks:
-        total = sum(problem_type_ranks.values()) or 1
-        prob_lines = [
+    # Build competition context (problem types + rating)
+    if competition_ranks:
+        total = sum(competition_ranks.values()) or 1
+        comp_lines = [
             f"  - {ptype}: {count} problems ({count/total*100:.0f}%)"
-            for ptype, count in sorted(problem_type_ranks.items(), key=lambda x: -x[1])[:5]
+            for ptype, count in sorted(competition_ranks.items(), key=lambda x: -x[1])[:5]
         ]
-        prob_block = "\n".join(prob_lines)
+        comp_block = "\n".join(comp_lines)
     else:
-        prob_block = "  No problem solving data provided"
+        comp_block = "  No problem solving data provided"
+
+    rating_line = ""
+    if competition_rating:
+        if "platform" in competition_rating and "value" in competition_rating:
+            rating_line = f"  Rating: {competition_rating['value']} on {competition_rating['platform']}"
+        elif "percentile" in competition_rating:
+            rating_line = f"  Rank percentile: {competition_rating['percentile']}"
+    comp_block = comp_block + ("\n" + rating_line if rating_line else "")
 
     # Confidence description
+    final_score = final_score or 0.0
+    ml_score    = ml_score or 0.0
+    llm_score   = llm_score or 0.0
+
     if final_score >= 0.60:
         conf_level = "very high"
     elif final_score >= 0.40:
@@ -648,32 +775,32 @@ You have access to four signals about this student:
 1. GRADES:
 {courses_block}
 
-2. COMMUNITY COMMENT:
+2. PROJECT GRADES:
+{projects_block}
+
+3. COMPETITION ACTIVITY (problems/CTF solved + rank):
+{comp_block}
+
+4. COMMUNITY COMMENT:
 "{top_comment}"
-
-3. CORRECT QUIZ ANSWERS:
-{quiz_block}
-
-4. COMPETITIVE PROGRAMMING (problems solved):
-{prob_block}
 
 SCORES:
 - ML model score: {ml_score*100:.1f}% (based on grades pattern)
-- LLM signal score: {llm_score*100:.1f}% (based on comment + quiz + problems)
+- LLM signal score: {llm_score*100:.1f}% (based on grades + project + competition + comment)
 - Final blended score: {final_score*100:.1f}%
 - Confidence level: {conf_level}
 
 Write a personalized explanation for the student covering these 6 parts.
-Be specific — reference actual courses, actual quiz answers, actual problem types.
+Be specific — reference actual courses, actual project titles, actual problem types/rank.
 Use friendly, encouraging language. Keep each part to 2-3 sentences max.
 
 Return ONLY valid JSON (no markdown, no extra text):
 {{
   "summary": "Overall 2-3 sentence explanation of why {track_name} fits this student",
   "grades": "Which specific courses and grades pointed to this track and why",
+  "project": "Which project(s) and grades signaled {track_name}, and why that matters",
+  "competition": "Which problem types/rank they show and how that maps to {track_name}",
   "comment": "What specifically in their comment signals {track_name}",
-  "quiz": "Which concepts their correct answers demonstrated that align with {track_name}",
-  "competitive": "Which problem types they solve most and how that maps to {track_name}",
   "confidence": "Why the system is {conf_level}ly confident in this recommendation"
 }}"""
 
@@ -682,9 +809,9 @@ Return ONLY valid JSON (no markdown, no extra text):
         return {
             "summary":     f"You were recommended for {track_name} based on your overall profile.",
             "grades":      "Your course grades show strong alignment with this track.",
+            "project":     "Your project work supports this recommendation.",
+            "competition": "Your problem-solving activity supports this recommendation.",
             "comment":     "Your community activity signals interest in this area.",
-            "quiz":        "Your quiz performance demonstrates relevant knowledge.",
-            "competitive": "Your problem-solving activity supports this recommendation.",
             "confidence":  f"Confidence level: {conf_level}.",
         }
 
@@ -694,8 +821,8 @@ Return ONLY valid JSON (no markdown, no extra text):
         return {
             "summary":     f"You were recommended for {track_name} based on your overall profile.",
             "grades":      "Your course grades show strong alignment with this track.",
+            "project":     "Your project work supports this recommendation.",
+            "competition": "Your problem-solving activity supports this recommendation.",
             "comment":     "Your community activity signals interest in this area.",
-            "quiz":        "Your quiz performance demonstrates relevant knowledge.",
-            "competitive": "Your problem-solving activity supports this recommendation.",
             "confidence":  f"Confidence level: {conf_level}.",
         }
