@@ -10,6 +10,7 @@ from mapper import (
     COURSE_CAPABILITY_WEIGHTS,
     add_course_to_weights,
     grades_to_capabilities,
+    project_grades_to_capabilities,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,14 +24,21 @@ recommend_bp = Blueprint("recommend", __name__)
 def recommend_api():
     """
     Required fields:
-      "grades":             {course: grade (0-100)}  — student course grades
-      "top_comment":        str                       — top community comment
-      "correct_answers":    [str, ...]                — correct quiz answer strings
-      "problem_type_ranks": {type: count}             — problems solved per type
+      "grades":             {course: grade (0-100)}   — student course grades
+      "project_grades":     {project_title: grade}    — student project/GP grades
+      "competition_ranks":  {problem_type: count}     — problems solved per type
                             (raw platform tags supported: "dp", "pwn", etc.)
+      "top_comment":        str                       — top upvoted community comment
 
-    All four fields are required. The system is designed for students who have
-    completed at least two years and have activity across all signal sources.
+    Optional:
+      "competition_rating": {"platform": "codeforces", "value": 1850}
+                             or {"percentile": 92}
+                            — actual competition rank/rating, used to scale
+                              the competition_ranks signal's confidence.
+
+    All four required fields are needed. The system is designed for students
+    who have completed at least two years and have activity across all
+    signal sources.
     """
     data = request.get_json(silent=True)
 
@@ -43,16 +51,16 @@ def recommend_api():
         missing.append("grades")
     if not data.get("top_comment", "").strip():
         missing.append("top_comment")
-    if not data.get("correct_answers"):
-        missing.append("correct_answers")
-    if not data.get("problem_type_ranks"):
-        missing.append("problem_type_ranks")
+    if not data.get("project_grades"):
+        missing.append("project_grades")
+    if not data.get("competition_ranks"):
+        missing.append("competition_ranks")
 
     if missing:
         return jsonify({
             "status": "error",
             "message": f"Missing required fields: {', '.join(missing)}",
-            "required": ["grades", "top_comment", "correct_answers", "problem_type_ranks"]
+            "required": ["grades", "project_grades", "competition_ranks", "top_comment"]
         }), 400
 
     # ── Resolve capability vector ─────────────────────────────────────────────
@@ -95,11 +103,10 @@ def recommend_api():
     track_names  = [r["track"] for r in ml_result["recommendations"]]
 
     # ── Collect LLM signals ───────────────────────────────────────────────────
-    top_comment        = data.get("top_comment", "").strip()
-    correct_answers    = data.get("correct_answers") or []
-    problem_type_ranks = data.get("problem_type_ranks") or {}
-
-    has_llm_signal = bool(top_comment or correct_answers or problem_type_ranks)
+    top_comment         = data.get("top_comment", "").strip()
+    project_grades      = data.get("project_grades") or {}
+    competition_ranks   = data.get("competition_ranks") or {}
+    competition_rating  = data.get("competition_rating") or None
 
     # All 3 LLM signals are always present.
     # LLM weight > ML weight because ML is trained on synthetic data.
@@ -108,21 +115,30 @@ def recommend_api():
     llm_scores: dict[str, float] = {}
     llm_signal_used: list[str]   = []
 
+    # Pre-warm the project capability cache (auto-generates weights for any
+    # project title not seen before) so the XAI explanation has real focus
+    # areas to reference, and so we can surface "unknown" projects too.
+    unknown_projects: list[str] = []
+    if project_grades:
+        api_key = os.getenv("OPENAI_API_KEY")
+        _, unknown_projects = project_grades_to_capabilities(project_grades, api_key=api_key)
+
     # grades are always passed to LLM for contextual interpretation
-    has_llm_signal = bool(top_comment or correct_answers or problem_type_ranks or grades)
+    has_llm_signal = bool(top_comment or project_grades or competition_ranks or grades)
 
     if has_llm_signal:
         llm_scores = get_llm_track_scores(
             top_comment=top_comment,
-            correct_answers=correct_answers if correct_answers else None,
-            problem_type_ranks=problem_type_ranks if problem_type_ranks else None,
+            project_grades=project_grades if project_grades else None,
+            competition_ranks=competition_ranks if competition_ranks else None,
+            competition_rating=competition_rating,
             grades=grades,
             recommended_tracks=track_names,
         )
         if top_comment:        llm_signal_used.append("community_comment")
-        if correct_answers:    llm_signal_used.append("quiz_answers")
-        if problem_type_ranks: llm_signal_used.append("problem_solving")
-        if grades:             llm_signal_used.append("grades")
+        if project_grades:     llm_signal_used.append("project_grades")
+        if competition_ranks:  llm_signal_used.append("competition_rank")
+        if grades:              llm_signal_used.append("grades")
 
     # ── Soft voting ───────────────────────────────────────────────────────────
     if llm_scores and any(v > 0 for v in llm_scores.values()):
@@ -214,8 +230,9 @@ def recommend_api():
             track_name=top_rec["track"],
             grades=grades or {},
             top_comment=top_comment,
-            correct_answers=correct_answers,
-            problem_type_ranks=problem_type_ranks,
+            project_grades=project_grades,
+            competition_ranks=competition_ranks,
+            competition_rating=competition_rating,
             ml_score=top_rec["ml_score"],
             llm_score=top_rec["llm_score"],
             final_score=top_rec["final_score"],
@@ -250,11 +267,18 @@ def recommend_api():
     if llm_scores:
         response["llm_track_scores"] = llm_scores
 
+    warnings = {}
     if unknown:
-        response["warnings"] = {
-            "unknown_courses": unknown,
-            "message": "These courses were not found in course_weights.json and were ignored.",
-        }
+        warnings["unknown_courses"] = unknown
+    if unknown_projects:
+        warnings["unknown_projects"] = unknown_projects
+    if warnings:
+        warnings["message"] = (
+            "Courses are ignored if not found in course_weights.json. "
+            "Projects listed in 'unknown_projects' could not be auto-scored "
+            "(e.g. OPENAI_API_KEY not set) and were ignored."
+        )
+        response["warnings"] = warnings
 
     return jsonify(response), 200
 
