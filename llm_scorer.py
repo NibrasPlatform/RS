@@ -689,7 +689,7 @@ def explain_recommendation_to_student(
     project_grades: dict[str, float],
     competition_ranks: dict[str, int | float],
     competition_rating: dict | None,
-    ml_score: float,
+    profile_score: float,
     llm_score: float,
     final_score: float,
 ) -> dict:
@@ -756,7 +756,7 @@ def explain_recommendation_to_student(
 
     # Confidence description
     final_score = final_score or 0.0
-    ml_score    = ml_score or 0.0
+    profile_score    = profile_score or 0.0
     llm_score   = llm_score or 0.0
 
     if final_score >= 0.60:
@@ -785,7 +785,7 @@ You have access to four signals about this student:
 "{top_comment}"
 
 SCORES:
-- ML model score: {ml_score*100:.1f}% (based on grades pattern)
+- Profile similarity score: {profile_score*100:.1f}% (based on grades pattern)
 - LLM signal score: {llm_score*100:.1f}% (based on grades + project + competition + comment)
 - Final blended score: {final_score*100:.1f}%
 - Confidence level: {conf_level}
