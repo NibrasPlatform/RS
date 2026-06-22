@@ -1,26 +1,11 @@
 # inference.py
 import logging
-import os
-
-import joblib
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
 from config import CAPABILITIES, TRACK_PROFILES, TRACK_VECS
 
 logger = logging.getLogger(__name__)
-
-# ─── Load trained artifacts ────────────────────────────────────────────────────
-_BASE = os.path.dirname(__file__)
-
-try:
-    model = joblib.load(os.path.join(_BASE, "model.pkl"))
-    le    = joblib.load(os.path.join(_BASE, "label_encoder.pkl"))
-except FileNotFoundError as e:
-    raise RuntimeError(
-        f"Required model file not found: {e}. "
-        "Run training.py first to generate model.pkl and label_encoder.pkl."
-    ) from e
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -356,6 +341,19 @@ def explain_full_recommendation(
 
 
 # ─── Main recommendation pipeline ─────────────────────────────────────────────
+# No ML model needed — scores are derived purely from the dot product between
+# the student's capability vector and each track's profile (TRACK_PROFILES).
+#
+# Why this is better than XGBoost here:
+#   • XGBoost needed synthetic training data  → introduced bias
+#   • TRACK_PROFILES encodes domain knowledge → interpretable & maintainable
+#   • Renaming tracks / changing weights takes effect immediately
+#   • Scores are deterministic and explainable
+#
+# Scoring:
+#   wdp  = Σ (track_weight_i × student_cap_i)       ← alignment with profile
+#   cos  = cosine_similarity(student_vec, track_vec) ← shape similarity
+#   ml_score = 0.6 × wdp_norm + 0.4 × cos_norm      ← blended, normalized 0→1
 
 def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) -> dict:
     validate_input(student_caps)
@@ -365,41 +363,37 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
     cap_values  = [student_caps[cap] for cap in CAPABILITIES]
     student_vec = np.array(cap_values).reshape(1, -1)
 
-    sim_values = [
-        cosine_similarity(student_vec, TRACK_VECS[track])[0, 0]
-        for track in TRACK_PROFILES
-    ]
-    wdp_values = [
-        weighted_dot_score(student_caps, profile)
-        for profile in TRACK_PROFILES.values()
-    ]
+    # ── Score every track ──────────────────────────────────────────────────────
+    raw_wdp = {}
+    raw_cos = {}
+    for track, profile in TRACK_PROFILES.items():
+        raw_wdp[track] = weighted_dot_score(student_caps, profile)
+        raw_cos[track] = float(cosine_similarity(student_vec, TRACK_VECS[track])[0, 0])
 
-    x     = np.array(cap_values + sim_values + wdp_values).reshape(1, -1)
-    probs = model.predict_proba(x)[0]
+    # Normalize both signals to [0, 1] across all tracks
+    wdp_max = max(raw_wdp.values()) or 1.0
+    cos_max = max(raw_cos.values()) or 1.0
 
     ml_scores_normalized: dict[str, float] = {
-        le.classes_[i]: float(round(probs[i], 4))
-        for i in range(len(le.classes_))
+        track: round(0.6 * (raw_wdp[track] / wdp_max) + 0.4 * (raw_cos[track] / cos_max), 4)
+        for track in TRACK_PROFILES
     }
 
-    top_idx = probs.argsort()[::-1][:top_k]
+    # Top-k by ml_score
+    top_tracks = sorted(ml_scores_normalized, key=lambda t: -ml_scores_normalized[t])[:top_k]
 
     top_strengths = [
         cap for cap, _ in sorted(student_caps.items(), key=lambda x: -x[1])[:3]
     ]
 
     results = []
-    for i in top_idx:
-        track      = le.classes_[i]
-        similarity = cosine_similarity(student_vec, TRACK_VECS[track])[0, 0]
-        wdp        = weighted_dot_score(student_caps, TRACK_PROFILES[track])
-
+    for track in top_tracks:
         rec = {
             "track":               track,
-            "probability":         float(round(probs[i] * 100, 2)),
+            "probability":         float(round(ml_scores_normalized[track] * 100, 2)),
             "ml_score_normalized": ml_scores_normalized[track],
-            "similarity":          float(round(similarity * 100, 2)),
-            "weighted_fit":        float(round(wdp * 100, 2)),
+            "similarity":          float(round(raw_cos[track] * 100, 2)),
+            "weighted_fit":        float(round(raw_wdp[track] * 100, 2)),
             "explanation":         None,
         }
 

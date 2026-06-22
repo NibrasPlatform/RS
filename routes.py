@@ -110,6 +110,7 @@ def recommend_api():
 
     # All 3 LLM signals are always present.
     # LLM weight > ML weight because ML is trained on synthetic data.
+    # 60% LLM (4 signals) / 40% similarity scorer (TRACK_PROFILES dot product)
     ml_weight = 0.40
 
     llm_scores: dict[str, float] = {}
