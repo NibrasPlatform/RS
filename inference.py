@@ -136,11 +136,11 @@ def explain_recommendation(
 def _explain_rejection(
     track: str,
     capability_vector: dict,
-    ml_scores: dict,
+    profile_scores: dict,
     llm_scores: dict,
 ) -> str:
     """Explain why a track was not selected as top recommendation."""
-    ml_score  = ml_scores.get(track, 0.0)
+    profile_score  = profile_scores.get(track, 0.0)
     llm_score = llm_scores.get(track, 0.0)
     track_caps = TRACK_PROFILES.get(track, {})
 
@@ -150,7 +150,7 @@ def _explain_rejection(
     ]
 
     reasons = []
-    if ml_score < 0.10:
+    if profile_score < 0.10:
         reasons.append("low ML probability")
     if llm_score < 0.30:
         reasons.append("weak LLM assessment")
@@ -163,7 +163,7 @@ def _explain_rejection(
 
 
 def _explain_llm_influence(
-    ml_scores: dict,
+    profile_scores: dict,
     llm_scores: dict,
     final_scores: dict,
 ) -> dict:
@@ -171,25 +171,25 @@ def _explain_llm_influence(
     promoted = []
     demoted  = []
 
-    ml_ranking    = sorted(ml_scores.items(),    key=lambda x: -x[1])
+    profile_ranking    = sorted(profile_scores.items(),    key=lambda x: -x[1])
     final_ranking = sorted(final_scores.items(), key=lambda x: -x[1])
 
     for i, (track, _) in enumerate(final_ranking):
-        ml_rank   = next(j for j, (t, _) in enumerate(ml_ranking) if t == track)
+        profile_rank   = next(j for j, (t, _) in enumerate(profile_ranking) if t == track)
         llm_score = llm_scores.get(track, 0.0)
 
-        if i < ml_rank and llm_score > ml_scores.get(track, 0):
+        if i < profile_rank and llm_score > profile_scores.get(track, 0):
             promoted.append({
                 "track":      track,
-                "moved_from": ml_rank + 1,
+                "moved_from": profile_rank + 1,
                 "moved_to":   i + 1,
                 "llm_score":  round(llm_score, 4),
                 "reason":     "LLM strongly endorsed this track",
             })
-        elif i > ml_rank and llm_score < ml_scores.get(track, 0):
+        elif i > profile_rank and llm_score < profile_scores.get(track, 0):
             demoted.append({
                 "track":      track,
-                "moved_from": ml_rank + 1,
+                "moved_from": profile_rank + 1,
                 "moved_to":   i + 1,
                 "llm_score":  round(llm_score, 4),
                 "reason":     "LLM assessment was lower than ML prediction",
@@ -204,7 +204,7 @@ def _explain_llm_influence(
 
 def _explain_confidence(
     final_score: float,
-    ml_scores: dict,
+    profile_scores: dict,
     llm_scores: dict,
     track_name: str,
 ) -> dict:
@@ -219,21 +219,21 @@ def _explain_confidence(
       Moderate  final >= 0.30 OR  (ML >= 0.25 AND LLM >= 0.30)
       Low       everything else
     """
-    ml_score  = ml_scores.get(track_name, 0.0)
+    profile_score  = profile_scores.get(track_name, 0.0)
     llm_score = llm_scores.get(track_name, 0.0)
 
     high_final_score = final_score >= 0.50
-    strong_ml        = ml_score    >= 0.35
+    strong_profile        = profile_score    >= 0.35
     strong_llm       = llm_score   >= 0.45
-    agreement        = abs(ml_score - llm_score) < 0.20
+    agreement        = abs(profile_score - llm_score) < 0.20
 
-    if high_final_score and strong_ml and strong_llm and agreement:
+    if high_final_score and strong_profile and strong_llm and agreement:
         level = "High"
         explanation = (
             "The model is highly confident. Both ML and LLM strongly support "
             "this track with good agreement between the two signals."
         )
-    elif final_score >= 0.30 or (ml_score >= 0.25 and llm_score >= 0.30):
+    elif final_score >= 0.30 or (profile_score >= 0.25 and llm_score >= 0.30):
         level = "Moderate"
         explanation = (
             "The model has moderate confidence. The final score is reasonable, "
@@ -249,7 +249,7 @@ def _explain_confidence(
     return {
         "level":       level,
         "final_score": round(final_score, 4),
-        "ml_score":    round(ml_score, 4),
+        "profile_score":    round(profile_score, 4),
         "llm_score":   round(llm_score, 4),
         "explanation": explanation,
     }
@@ -257,7 +257,7 @@ def _explain_confidence(
 
 def _explain_feature_importance(
     capability_vector: dict,
-    ml_scores: dict,
+    profile_scores: dict,
 ) -> dict:
     """Explain which capabilities were most important."""
     sorted_caps = sorted(capability_vector.items(), key=lambda x: -x[1])
@@ -301,7 +301,7 @@ def explain_full_recommendation(
     capability_vector: dict,
     grades: dict,
     course_weights: dict,
-    ml_scores: dict,
+    profile_scores: dict,
     llm_scores: dict,
     final_scores: dict,
 ) -> dict:
@@ -321,9 +321,9 @@ def explain_full_recommendation(
         {
             "track":       track,
             "final_score": score,
-            "ml_score":    ml_scores.get(track, 0),
+            "profile_score":    profile_scores.get(track, 0),
             "llm_score":   llm_scores.get(track, 0),
-            "reason":      _explain_rejection(track, capability_vector, ml_scores, llm_scores),
+            "reason":      _explain_rejection(track, capability_vector, profile_scores, llm_scores),
         }
         for track, score in sorted(final_scores.items(), key=lambda x: -x[1])
         if track != track_name
@@ -332,11 +332,11 @@ def explain_full_recommendation(
     return {
         "track_explanation": track_explanation,
         "rejected_tracks":   other_tracks[:3],
-        "llm_influence":     _explain_llm_influence(ml_scores, llm_scores, final_scores),
+        "llm_influence":     _explain_llm_influence(profile_scores, llm_scores, final_scores),
         "confidence":        _explain_confidence(
-                                 final_scores[track_name], ml_scores, llm_scores, track_name
+                                 final_scores[track_name], profile_scores, llm_scores, track_name
                              ),
-        "feature_importance": _explain_feature_importance(capability_vector, ml_scores),
+        "feature_importance": _explain_feature_importance(capability_vector, profile_scores),
     }
 
 
@@ -353,7 +353,7 @@ def explain_full_recommendation(
 # Scoring:
 #   wdp  = Σ (track_weight_i × student_cap_i)       ← alignment with profile
 #   cos  = cosine_similarity(student_vec, track_vec) ← shape similarity
-#   ml_score = 0.6 × wdp_norm + 0.4 × cos_norm      ← blended, normalized 0→1
+#   profile_score = 0.6 × wdp_norm + 0.4 × cos_norm      ← blended, normalized 0→1
 
 def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) -> dict:
     validate_input(student_caps)
@@ -374,13 +374,13 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
     wdp_max = max(raw_wdp.values()) or 1.0
     cos_max = max(raw_cos.values()) or 1.0
 
-    ml_scores_normalized: dict[str, float] = {
+    profile_scores_normalized: dict[str, float] = {
         track: round(0.6 * (raw_wdp[track] / wdp_max) + 0.4 * (raw_cos[track] / cos_max), 4)
         for track in TRACK_PROFILES
     }
 
-    # Top-k by ml_score
-    top_tracks = sorted(ml_scores_normalized, key=lambda t: -ml_scores_normalized[t])[:top_k]
+    # Top-k by profile_score
+    top_tracks = sorted(profile_scores_normalized, key=lambda t: -profile_scores_normalized[t])[:top_k]
 
     top_strengths = [
         cap for cap, _ in sorted(student_caps.items(), key=lambda x: -x[1])[:3]
@@ -390,8 +390,8 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
     for track in top_tracks:
         rec = {
             "track":               track,
-            "probability":         float(round(ml_scores_normalized[track] * 100, 2)),
-            "ml_score_normalized": ml_scores_normalized[track],
+            "probability":         float(round(profile_scores_normalized[track] * 100, 2)),
+            "profile_score": profile_scores_normalized[track],
             "similarity":          float(round(raw_cos[track] * 100, 2)),
             "weighted_fit":        float(round(raw_wdp[track] * 100, 2)),
             "explanation":         None,
@@ -407,36 +407,36 @@ def recommend(student_caps: dict, grades: dict | None = None, top_k: int = 3) ->
     return {
         "student_strengths": top_strengths,
         "recommendations":   results,
-        "ml_scores":         ml_scores_normalized,
+        "profile_scores":         profile_scores_normalized,
     }
 
 
 # ─── Soft voting: ML + LLM ────────────────────────────────────────────────────
 
 def soft_vote(
-    ml_scores: dict[str, float],
+    profile_scores: dict[str, float],
     llm_scores: dict[str, float],
-    ml_weight: float = 0.40,
+    profile_weight: float = 0.40,
     top_k: int = 3,
 ) -> list[dict]:
-    llm_weight = 1.0 - ml_weight
-    all_tracks = set(ml_scores) | set(llm_scores)
+    llm_weight = 1.0 - profile_weight
+    all_tracks = set(profile_scores) | set(llm_scores)
     blended = []
 
     for track in all_tracks:
-        ml  = ml_scores.get(track, 0.0)
+        profile  = profile_scores.get(track, 0.0)
         llm = llm_scores.get(track, 0.0)
 
         if llm == 0.0:
-            final = round(ml * 0.6, 4)
+            final = round(profile * 0.6, 4)
         else:
-            final = round(ml_weight * ml + llm_weight * llm, 4)
+            final = round(profile_weight * profile + llm_weight * llm, 4)
 
         blended.append({
-            "track":       track,
-            "ml_score":    round(ml, 4),
-            "llm_score":   round(llm, 4),
-            "final_score": final,
+            "track":         track,
+            "profile_score": round(profile, 4),
+            "llm_score":     round(llm, 4),
+            "final_score":   final,
         })
 
     blended.sort(key=lambda x: -x["final_score"])
