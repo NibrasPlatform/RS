@@ -95,12 +95,12 @@ def recommend_api():
 
     # ── ML recommendation ─────────────────────────────────────────────────────
     try:
-        ml_result = recommend(caps, grades=grades)
+        profile_result = recommend(caps, grades=grades)
     except ValueError as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
-    ml_scores    = ml_result["ml_scores"]          # {track: 0–1}
-    track_names  = [r["track"] for r in ml_result["recommendations"]]
+    profile_scores    = profile_result["profile_scores"]          # {track: 0–1}
+    track_names  = [r["track"] for r in profile_result["recommendations"]]
 
     # ── Collect LLM signals ───────────────────────────────────────────────────
     top_comment         = data.get("top_comment", "").strip()
@@ -111,7 +111,7 @@ def recommend_api():
     # All 3 LLM signals are always present.
     # LLM weight > ML weight because ML is trained on synthetic data.
     # 60% LLM (4 signals) / 40% similarity scorer (TRACK_PROFILES dot product)
-    ml_weight = 0.40
+    profile_weight = 0.40
 
     llm_scores: dict[str, float] = {}
     llm_signal_used: list[str]   = []
@@ -143,7 +143,7 @@ def recommend_api():
 
     # ── Soft voting ───────────────────────────────────────────────────────────
     if llm_scores and any(v > 0 for v in llm_scores.values()):
-        voted = soft_vote(ml_scores, llm_scores, ml_weight=ml_weight, top_k=3)
+        voted = soft_vote(profile_scores, llm_scores, profile_weight=profile_weight, top_k=3)
 
         # Attach ML explanation to voted tracks
         from inference import explain_recommendation
@@ -151,24 +151,24 @@ def recommend_api():
         import numpy as np
         from config import CAPABILITIES, TRACK_PROFILES, TRACK_VECS
 
-        ml_recs_by_track = {r["track"]: r for r in ml_result["recommendations"]}
+        profile_recs_by_track = {r["track"]: r for r in profile_result["recommendations"]}
         student_vec = np.array([caps[c] for c in CAPABILITIES]).reshape(1, -1)
 
         final_recommendations = []
         for i, v in enumerate(voted):
             track  = v["track"]
-            ml_rec = ml_recs_by_track.get(track)
+            profile_rec = profile_recs_by_track.get(track)
 
-            if ml_rec:
+            if profile_rec:
                 # Track was in ML top_k — use its data directly
-                probability  = ml_rec.get("probability")
-                similarity   = ml_rec.get("similarity")
-                weighted_fit = ml_rec.get("weighted_fit")
-                explanation  = ml_rec.get("explanation")
+                probability  = profile_rec.get("probability")
+                similarity   = profile_rec.get("similarity")
+                weighted_fit = profile_rec.get("weighted_fit")
+                explanation  = profile_rec.get("explanation")
             else:
                 # Track was promoted by LLM — compute its stats on the fly
                 from inference import weighted_dot_score
-                probability  = round(ml_scores.get(track, 0.0) * 100, 2)
+                probability  = round(profile_scores.get(track, 0.0) * 100, 2)
                 similarity   = round(float(cos_sim(student_vec, TRACK_VECS[track])[0, 0]) * 100, 2)
                 weighted_fit = round(weighted_dot_score(caps, TRACK_PROFILES[track]) * 100, 2)
                 explanation  = explain_recommendation(
@@ -194,13 +194,13 @@ def recommend_api():
                 "rank":           i + 1,
                 "track":          track,
                 "final_score":    v["final_score"],
-                "ml_score":       v["ml_score"],
+                "profile_score":       v["profile_score"],
                 "llm_score":      v["llm_score"],
                 "probability":    probability,
                 "similarity":     similarity,
                 "weighted_fit":   weighted_fit,
                 "explanation":    explanation,
-                "llm_promoted":   ml_rec is None,
+                "llm_promoted":   profile_rec is None,
                 "fit_warning":    fit_warning,
             })
 
@@ -211,17 +211,17 @@ def recommend_api():
             {
                 "rank":          i + 1,
                 "track":         rec["track"],
-                "final_score":   rec["ml_score_normalized"],
-                "ml_score":      rec["ml_score_normalized"],
+                "final_score":   rec["profile_score"],
+                "profile_score":      rec["profile_score"],
                 "llm_score":     None,
                 "probability":   rec["probability"],
                 "similarity":    rec["similarity"],
                 "weighted_fit":  rec["weighted_fit"],
                 "explanation":   rec.get("explanation"),
             }
-            for i, rec in enumerate(ml_result["recommendations"])
+            for i, rec in enumerate(profile_result["recommendations"])
         ]
-        scoring_method = "ml_only"
+        scoring_method = "profile_only"
 
     # ── Generate student-facing XAI for top recommendation ──────────────────
     top_rec = final_recommendations[0] if final_recommendations else {}
@@ -234,7 +234,7 @@ def recommend_api():
             project_grades=project_grades,
             competition_ranks=competition_ranks,
             competition_rating=competition_rating,
-            ml_score=top_rec["ml_score"],
+            profile_score=top_rec["profile_score"],
             llm_score=top_rec["llm_score"],
             final_score=top_rec["final_score"],
         )
@@ -244,8 +244,8 @@ def recommend_api():
 
     response = {
         "student_summary": {
-            "strengths":      ml_result["student_strengths"],
-            "top_capability": ml_result["student_strengths"][0] if ml_result["student_strengths"] else None,
+            "strengths":      profile_result["student_strengths"],
+            "top_capability": profile_result["student_strengths"][0] if profile_result["student_strengths"] else None,
         },
         "top_recommendation": {
             "track":     top.get("track"),
@@ -256,8 +256,8 @@ def recommend_api():
         "recommendations": final_recommendations,
         "meta": {
             "scoring_method":   scoring_method,
-            "ml_weight":        ml_weight if has_llm_signal else 1.0,
-            "llm_weight":       round(1 - ml_weight, 2) if has_llm_signal else 0.0,
+            "profile_weight":        profile_weight if has_llm_signal else 1.0,
+            "llm_weight":       round(1 - profile_weight, 2) if has_llm_signal else 0.0,
             "llm_signals_used": llm_signal_used,
         },
         "insights": {
