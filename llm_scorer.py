@@ -11,20 +11,20 @@ logger = logging.getLogger(__name__)
 # ─── Constants ─────────────────────────────────────────────────────────────────
 
 CAPABILITIES = [
-    "Programming", "Algorithms", "Math", "Theory",
-    "Data", "Systems", "Hardware", "AI",
+    "Programming", "Algorithms", "Math", "Algorithms & Cryptography",
+    "Data", "Infrastructure & Security", "Hardware", "AI",
     "UX", "Security", "Graphics", "Biology",
 ]
 
 TRACKS = [
-    "Artificial Intelligence",
-    "Systems",
-    "Theory",
-    "Human-Computer Interaction",
-    "Visual Computing",
-    "Computer Engineering",
-    "Information Track",
-    "Computational Biology",
+    "AI",
+    "Infrastructure & Security",
+    "Algorithms & Cryptography",
+    "Human-Computer Interaction & UX",
+    "Computer Vision & Robotics",
+    "Embedded Systems",
+    "Data Engineering & Analytics",
+    "Computational Biology & Bioinformatics",
 ]
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) if os.getenv("OPENAI_API_KEY") else None
@@ -35,58 +35,58 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) if os.getenv("OPENAI_API_KE
 
 PROBLEM_TYPE_TRACK_MAP: dict[str, dict[str, float]] = {
     # Artificial Intelligence
-    "Machine Learning":         {"Artificial Intelligence": 0.90, "Information Track": 0.10},
-    "Neural Networks":          {"Artificial Intelligence": 0.95},
-    "Search & Optimization":    {"Artificial Intelligence": 0.70, "Theory": 0.30},
-    "NLP Problems":             {"Artificial Intelligence": 0.85, "Information Track": 0.15},
-    "Computer Vision":          {"Visual Computing": 0.70, "Artificial Intelligence": 0.30},
+    "Machine Learning":         {"AI": 0.90, "Data Engineering & Analytics": 0.10},
+    "Neural Networks":          {"AI": 0.95},
+    "Search & Optimization":    {"AI": 0.70, "Algorithms & Cryptography": 0.30},
+    "NLP Problems":             {"AI": 0.85, "Data Engineering & Analytics": 0.15},
+    "Computer Vision":          {"Computer Vision & Robotics": 0.70, "AI": 0.30},
 
     # Theory
-    "Dynamic Programming":      {"Theory": 0.70, "Artificial Intelligence": 0.20, "Information Track": 0.10},
-    "Graph Algorithms":         {"Theory": 0.60, "Artificial Intelligence": 0.20, "Systems": 0.20},
-    "Math / Proofs":            {"Theory": 0.80, "Artificial Intelligence": 0.20},
-    "Combinatorics":            {"Theory": 0.85, "Computational Biology": 0.15},
-    "Automata / Complexity":    {"Theory": 0.95},
+    "Dynamic Programming":      {"Algorithms & Cryptography": 0.70, "AI": 0.20, "Data Engineering & Analytics": 0.10},
+    "Graph Algorithms":         {"Algorithms & Cryptography": 0.60, "AI": 0.20, "Infrastructure & Security": 0.20},
+    "Math / Proofs":            {"Algorithms & Cryptography": 0.80, "AI": 0.20},
+    "Combinatorics":            {"Algorithms & Cryptography": 0.85, "Computational Biology & Bioinformatics": 0.15},
+    "Automata / Complexity":    {"Algorithms & Cryptography": 0.95},
 
     # Systems
-    "OS Concepts":              {"Systems": 0.90, "Computer Engineering": 0.10},
-    "Memory Management":        {"Systems": 0.70, "Computer Engineering": 0.30},
-    "Concurrency":              {"Systems": 0.85, "Computer Engineering": 0.15},
-    "Networking":               {"Systems": 0.75, "Information Track": 0.25},
-    "Compilers":                {"Systems": 0.80, "Theory": 0.20},
+    "OS Concepts":              {"Infrastructure & Security": 0.90, "Embedded Systems": 0.10},
+    "Memory Management":        {"Infrastructure & Security": 0.70, "Embedded Systems": 0.30},
+    "Concurrency":              {"Infrastructure & Security": 0.85, "Embedded Systems": 0.15},
+    "Networking":               {"Infrastructure & Security": 0.75, "Data Engineering & Analytics": 0.25},
+    "Compilers":                {"Infrastructure & Security": 0.80, "Algorithms & Cryptography": 0.20},
 
     # Computer Engineering
-    "Circuit Design":           {"Computer Engineering": 0.95},
-    "Low-level Programming":    {"Computer Engineering": 0.70, "Systems": 0.30},
-    "Hardware Architecture":    {"Computer Engineering": 0.90, "Systems": 0.10},
-    "Embedded Systems":         {"Computer Engineering": 0.85, "Systems": 0.15},
+    "Circuit Design":           {"Embedded Systems": 0.95},
+    "Low-level Programming":    {"Embedded Systems": 0.70, "Infrastructure & Security": 0.30},
+    "Hardware Architecture":    {"Embedded Systems": 0.90, "Infrastructure & Security": 0.10},
+    "Embedded Systems":         {"Embedded Systems": 0.85, "Infrastructure & Security": 0.15},
 
     # Visual Computing
-    "Geometry / Computational Geometry": {"Visual Computing": 0.90, "Theory": 0.10},
-    "Image Processing":         {"Visual Computing": 0.85, "Artificial Intelligence": 0.15},
-    "Graphics Rendering":       {"Visual Computing": 0.95},
-    "Simulation":               {"Visual Computing": 0.60, "Artificial Intelligence": 0.40},
+    "Geometry / Computational Geometry": {"Computer Vision & Robotics": 0.90, "Algorithms & Cryptography": 0.10},
+    "Image Processing":         {"Computer Vision & Robotics": 0.85, "AI": 0.15},
+    "Graphics Rendering":       {"Computer Vision & Robotics": 0.95},
+    "Simulation":               {"Computer Vision & Robotics": 0.60, "AI": 0.40},
 
     # Human-Computer Interaction
-    "UI / UX Problems":         {"Human-Computer Interaction": 0.95},
-    "Accessibility":            {"Human-Computer Interaction": 0.90},
-    "Human Factors":            {"Human-Computer Interaction": 0.85},
+    "UI / UX Problems":         {"Human-Computer Interaction & UX": 0.95},
+    "Accessibility":            {"Human-Computer Interaction & UX": 0.90},
+    "Human Factors":            {"Human-Computer Interaction & UX": 0.85},
 
     # Information Track
-    "Database & SQL":           {"Information Track": 0.90, "Systems": 0.10},
-    "Data Analysis":            {"Information Track": 0.70, "Artificial Intelligence": 0.30},
-    "Cryptography / Security":  {"Information Track": 0.60, "Systems": 0.40},
-    "Information Retrieval":    {"Information Track": 0.80, "Artificial Intelligence": 0.20},
+    "Database & SQL":           {"Data Engineering & Analytics": 0.90, "Infrastructure & Security": 0.10},
+    "Data Analysis":            {"Data Engineering & Analytics": 0.70, "AI": 0.30},
+    "Cryptography / Security":  {"Data Engineering & Analytics": 0.60, "Infrastructure & Security": 0.40},
+    "Information Retrieval":    {"Data Engineering & Analytics": 0.80, "AI": 0.20},
 
     # Computational Biology
-    "Sequence Alignment":       {"Computational Biology": 0.95},
-    "Bioinformatics":           {"Computational Biology": 0.90, "Information Track": 0.10},
-    "Genomics / Statistics":    {"Computational Biology": 0.80, "Artificial Intelligence": 0.20},
+    "Sequence Alignment":       {"Computational Biology & Bioinformatics": 0.95},
+    "Bioinformatics":           {"Computational Biology & Bioinformatics": 0.90, "Data Engineering & Analytics": 0.10},
+    "Genomics / Statistics":    {"Computational Biology & Bioinformatics": 0.80, "AI": 0.20},
 
     # General (signal to multiple tracks)
-    "Data Structures":          {"Theory": 0.40, "Systems": 0.30, "Artificial Intelligence": 0.30},
-    "Sorting / Searching":      {"Theory": 0.50, "Artificial Intelligence": 0.30, "Information Track": 0.20},
-    "Probability & Statistics": {"Artificial Intelligence": 0.50, "Computational Biology": 0.30, "Information Track": 0.20},
+    "Data Structures":          {"Algorithms & Cryptography": 0.40, "Infrastructure & Security": 0.30, "AI": 0.30},
+    "Sorting / Searching":      {"Algorithms & Cryptography": 0.50, "AI": 0.30, "Data Engineering & Analytics": 0.20},
+    "Probability & Statistics": {"AI": 0.50, "Computational Biology & Bioinformatics": 0.30, "Data Engineering & Analytics": 0.20},
 }
 
 
@@ -118,7 +118,7 @@ PLATFORM_TAG_MAP: dict[str, str] = {
     "implementation":            "Data Structures",
     "bitmasks":                  "Data Structures",
     "constructive algorithms":   "Automata / Complexity",
-    "games":                     "Theory",
+    "games":                     "Algorithms & Cryptography",
     "flows":                     "Graph Algorithms",
     "matrices":                  "Math / Proofs",
     "fft":                       "Math / Proofs",
