@@ -6,8 +6,8 @@ np.random.seed(RANDOM_STATE)
 
 # ─── Single source of truth for capabilities ──────────────────────────────────
 CAPABILITIES = [
-    "Programming", "Algorithms", "Math", "Theory",
-    "Data", "Systems", "Hardware", "AI",
+    "Programming", "Algorithms", "Math", "Algorithms & Cryptography",
+    "Data", "Infrastructure & Security", "Hardware", "AI",
     "UX", "Security", "Graphics", "Biology"
 ]
 
@@ -21,14 +21,14 @@ TARGET_COL = "Track_1"
 # official description and topics. Weights were averaged across all track
 # courses then normalized to sum = 1.0.
 TRACK_PROFILES = {
-    "Artificial Intelligence":    {"AI": 0.60, "Math": 0.26, "Algorithms": 0.06, "Programming": 0.04, "Graphics": 0.04},
-    "Systems":                    {"Systems": 0.45, "Programming": 0.25, "Hardware": 0.14, "Security": 0.10, "Theory": 0.06},
-    "Theory":                     {"Theory": 0.40, "Math": 0.29, "Algorithms": 0.25, "Security": 0.06},
-    "Human-Computer Interaction": {"UX": 0.57, "Data": 0.26, "Programming": 0.10, "Theory": 0.07},
-    "Visual Computing":           {"Math": 0.34, "AI": 0.33, "Graphics": 0.21, "Systems": 0.07, "Algorithms": 0.04},
-    "Computer Engineering":       {"Hardware": 0.45, "Systems": 0.28, "Math": 0.15, "Programming": 0.13},
-    "Information Track":          {"Data": 0.46, "AI": 0.13, "Programming": 0.09, "Algorithms": 0.09, "Math": 0.09, "Security": 0.07, "Systems": 0.06},
-    "Computational Biology":      {"Biology": 0.29, "AI": 0.24, "Data": 0.16, "UX": 0.11, "Math": 0.10, "Algorithms": 0.05, "Theory": 0.05},
+    "AI":    {"AI": 0.60, "Math": 0.26, "Algorithms": 0.06, "Programming": 0.04, "Graphics": 0.04},
+    "Infrastructure & Security":                    {"Infrastructure & Security": 0.45, "Programming": 0.25, "Hardware": 0.14, "Security": 0.10, "Algorithms & Cryptography": 0.06},
+    "Algorithms & Cryptography":                     {"Algorithms & Cryptography": 0.40, "Math": 0.29, "Algorithms": 0.25, "Security": 0.06},
+    "Human-Computer Interaction & UX": {"UX": 0.57, "Data": 0.26, "Programming": 0.10, "Algorithms & Cryptography": 0.07},
+    "Computer Vision & Robotics":           {"Math": 0.34, "AI": 0.33, "Graphics": 0.21, "Infrastructure & Security": 0.07, "Algorithms": 0.04},
+    "Embedded Systems":       {"Hardware": 0.45, "Infrastructure & Security": 0.28, "Math": 0.15, "Programming": 0.13},
+    "Data Engineering & Analytics":          {"Data": 0.46, "AI": 0.13, "Programming": 0.09, "Algorithms": 0.09, "Math": 0.09, "Security": 0.07, "Infrastructure & Security": 0.06},
+    "Computational Biology & Bioinformatics":      {"Biology": 0.29, "AI": 0.24, "Data": 0.16, "UX": 0.11, "Math": 0.10, "Algorithms": 0.05, "Algorithms & Cryptography": 0.05},
 }
 
 
