@@ -4,7 +4,7 @@ import os
 
 from flask import Blueprint, jsonify, request
 
-from inference import recommend, soft_vote, rerank_with_community
+from inference import recommend, soft_vote
 from llm_scorer import get_llm_track_scores, get_community_scores, explain_recommendation_to_student
 from mapper import (
     COURSE_CAPABILITY_WEIGHTS,

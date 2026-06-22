@@ -221,15 +221,25 @@ def _explain_confidence(
     final_score: float,
     ml_scores: dict,
     llm_scores: dict,
-    track_name: str,          # ← fixed: use track_name directly
+    track_name: str,
 ) -> dict:
-    """Explain the confidence level of the recommendation."""
+    """
+    Explain the confidence level of the recommendation.
+
+    Thresholds calibrated for the 4-signal blended final_score
+    (grades 35% + project 30% + competition 20% + community 15%),
+    which typically lands in 0.25–0.65 rather than the 0–1 ML-only range.
+
+      High      final >= 0.50 AND ML >= 0.35 AND LLM >= 0.45 AND agreement < 0.20
+      Moderate  final >= 0.30 OR  (ML >= 0.25 AND LLM >= 0.30)
+      Low       everything else
+    """
     ml_score  = ml_scores.get(track_name, 0.0)
     llm_score = llm_scores.get(track_name, 0.0)
 
-    high_final_score = final_score >= 0.70
-    strong_ml        = ml_score  >= 0.50
-    strong_llm       = llm_score >= 0.60
+    high_final_score = final_score >= 0.50
+    strong_ml        = ml_score    >= 0.35
+    strong_llm       = llm_score   >= 0.45
     agreement        = abs(ml_score - llm_score) < 0.20
 
     if high_final_score and strong_ml and strong_llm and agreement:
@@ -238,10 +248,10 @@ def _explain_confidence(
             "The model is highly confident. Both ML and LLM strongly support "
             "this track with good agreement between the two signals."
         )
-    elif high_final_score or (strong_ml and strong_llm):
+    elif final_score >= 0.30 or (ml_score >= 0.25 and llm_score >= 0.30):
         level = "Moderate"
         explanation = (
-            "The model has moderate confidence. The final score is strong, "
+            "The model has moderate confidence. The final score is reasonable, "
             "but ML and LLM signals show some disagreement."
         )
     else:
@@ -440,17 +450,6 @@ def soft_vote(
     return blended[:top_k]
 
 
-# ─── Community reranking (kept for backward compatibility) ─────────────────────
-
-def rerank_with_community(
-    recommendations: list,
-    community_scores: dict,
-    weight: float = 0.1,
-) -> list:
-    for rec in recommendations:
-        community_boost = community_scores.get(rec["track"], 0.0)
-        rec["final_score"] = round(
-            (1 - weight) * (rec["probability"] / 100) + weight * community_boost,
-            4,
-        )
-    return sorted(recommendations, key=lambda x: x["final_score"], reverse=True)
+# rerank_with_community was removed.
+# Community signal is now one of the 4 weighted inputs to get_llm_track_scores()
+# (weight=0.15) and is blended before soft_vote — not applied as post-processing.

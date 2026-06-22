@@ -8,3 +8,4 @@ joblib
 openai
 flask_cors
 python-dotenv
+pytest

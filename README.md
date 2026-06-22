@@ -6,44 +6,42 @@ An intelligent CS track recommendation system built for the NIBRAS academic plat
 
 ## 🎯 Project Goal
 
-Students often choose their CS specialization based on peer influence or incomplete information. NIBRAS replaces guesswork with a data-driven recommendation: the system analyzes a student's grades, graduation/term project work, competitive programming activity, and community engagement to recommend the top 3 best-fitting tracks, with clear, student-facing explanations of why each track fits.
+Students often choose their CS specialization based on peer influence or incomplete information. NIBRAS replaces guesswork with a data-driven recommendation: the system analyzes a student's grades, community activity, quiz performance, and competitive programming history to recommend the top 3 best-fitting tracks, with clear explanations of why each track fits.
 
 ---
 
 ## 🧠 Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                              INPUTS                               │
-│   grades   |   project grades   |   competition ranks (+rating)   │
-│                        |   top community comment                  │
-└──────────────────┬─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                     INPUTS                          │
+│  grades | comment | quiz answers | problem solving  │
+└──────────────────┬──────────────────────────────────┘
                    │
         ┌──────────┴──────────┐
         ▼                     ▼
-┌───────────────┐    ┌─────────────────────────────┐
-│  ML Model     │    │       LLM Scorer             │
-│  (XGBoost)    │    │       (GPT-4o-mini)          │
-│               │    │                               │
-│ grades →      │    │ grades       → scores (35%)  │
-│ capabilities  │    │ project      → scores (30%)  │
-│ → track probs │    │ competition  → scores (20%)  │
-│               │    │ community    → scores (15%)  │
-└──────┬────────┘    └──────────────┬────────────────┘
-       │                            │
-       └──────────┬─────────────────┘
+┌───────────────┐    ┌─────────────────────┐
+│  ML Model     │    │   LLM Scorer        │
+│  (XGBoost)    │    │   (GPT-4o-mini)     │
+│               │    │                     │
+│ grades →      │    │ comment   → scores  │
+│ capabilities  │    │ quiz      → scores  │
+│ → track probs │    │ problems  → scores  │
+│               │    │ grades    → scores  │
+└──────┬────────┘    └──────────┬──────────┘
+       │                        │
+       └──────────┬─────────────┘
                   ▼
          ┌────────────────┐
          │  Soft Voting   │
-         │  ML × 0.4 + LLM × 0.6  │
+         │  ML × w + LLM × (1-w)  │
          └────────┬───────┘
                   ▼
-         ┌─────────────────────────┐
-         │ Top 3 Tracks            │
-         │ + per-track XAI         │
-         │ + student-facing XAI    │
-         │ + fit_warning           │
-         └─────────────────────────┘
+         ┌────────────────┐
+         │ Top 3 Tracks   │
+         │ + XAI explain  │
+         │ + fit_warning  │
+         └────────────────┘
 ```
 
 ---
@@ -57,19 +55,16 @@ Students often choose their CS specialization based on peer influence or incompl
     "CS161": 88,
     "CS107": 85
   },
-  "project_grades": {
-    "AI-Powered Recommendation Platform": 92
-  },
-  "competition_ranks": {
-    "dp": 120,
-    "graphs": 80,
-    "pwn": 15
-  },
-  "competition_rating": {
-    "platform": "codeforces",
-    "value": 1850
-  },
-  "top_comment": "I love building neural networks"
+  "top_comment": "I love building neural networks",
+  "correct_answers": [
+    "Gradient descent minimizes loss by updating weights...",
+    "Overfitting occurs when a model memorizes noise..."
+  ],
+  "problem_type_ranks": {
+    "machine learning": 150,
+    "dp": 95,
+    "network security": 40
+  }
 }
 ```
 
@@ -77,37 +72,27 @@ Students often choose their CS specialization based on peer influence or incompl
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `grades` | `{course: grade}` | ✅* | Course grades (0–100). Course codes are matched against `course_weights.json`. |
-| `capabilities` | `{capability: 0–1}` | ✅* | Pre-computed capability vector — alternative to `grades` (skips the grade→capability mapping step). |
-| `project_grades` | `{project_title: grade}` | ✅ | Graduation/term project title(s) + grade (0–100). Free-form titles — auto-scored via GPT-4o-mini on first sight. |
-| `competition_ranks` | `{type_or_tag: count}` | ✅ | Problems/CTF challenges solved per type. Raw platform tags supported (Codeforces, LeetCode, TryHackMe). |
-| `top_comment` | `string` | ✅ | Student's top upvoted community comment. |
-| `competition_rating` | `{"platform": str, "value": num}` or `{"percentile": num}` | optional | Actual rank/rating (e.g. Codeforces rating, CTF percentile) — scales confidence of the `competition_ranks` signal. |
+| `grades` | `{course: grade}` | ✅ | Course grades (0–100) |
+| `top_comment` | `string` | ✅ | Student's top community comment |
+| `correct_answers` | `[string]` | ✅ | Correct quiz answers (one per item) |
+| `problem_type_ranks` | `{type: count}` | ✅ | Problems solved per type — raw platform tags supported |
 
-\* Either `grades` **or** `capabilities` must be provided.
-
-> `grades` (or `capabilities`), `top_comment`, `project_grades`, and `competition_ranks` are all required by `/api/recommend`. The system is designed for students who have completed at least two years and have activity across all signal sources.
+> All four fields are required. The system is designed for students who have completed at least two years and have activity across all signal sources.
 
 ### Supported platform tags (auto-normalized)
 
-`competition_ranks` accepts raw tags straight from competitive-programming/CTF platforms — they're normalized to a standard problem-type taxonomy before scoring. A few examples:
+The system automatically maps raw tags from competitive programming platforms:
 
 | Platform | Raw tag | Maps to |
 |----------|---------|---------|
 | Codeforces | `"dp"` | `Dynamic Programming` |
 | Codeforces | `"graphs"` | `Graph Algorithms` |
-| Codeforces | `"hashing"` | `Cryptography / Security` |
 | LeetCode | `"tree"` | `Graph Algorithms` |
 | LeetCode | `"dynamic programming"` | `Dynamic Programming` |
-| LeetCode | `"database"` | `Database & SQL` |
-| TryHackMe / CTF | `"pwn"` / `"binary exploitation"` | `Low-level Programming` |
-| TryHackMe / CTF | `"network security"` | `Networking` |
-| TryHackMe / CTF | `"cryptography"` | `Cryptography / Security` |
-| TryHackMe / CTF | `"osint"` / `"forensics"` / `"steganography"` | `Information Retrieval` |
-| TryHackMe / CTF | `"privilege escalation"` / `"active directory"` | `OS Concepts` |
-| Any | unknown tag | Passed to LLM as-is for inference |
-
-The full mapping lives in `PLATFORM_TAG_MAP` in `llm_scorer.py`, covering Codeforces, LeetCode, and TryHackMe/CTF taxonomies.
+| TryHackMe | `"pwn"` | `Low-level Programming` |
+| TryHackMe | `"network security"` | `Networking` |
+| TryHackMe | `"cryptography"` | `Cryptography / Security` |
+| Any | unknown tag | Passed to LLM for inference |
 
 ---
 
@@ -125,17 +110,12 @@ CS161: 88 × {Algorithms: 0.65, Theory: 0.25, Math: 0.10}
 
 **12 capabilities:** Programming, Algorithms, Math, Theory, Data, Systems, Hardware, AI, UX, Security, Graphics, Biology
 
-Course → capability weights are stored in `course_weights.json` (the single source of truth, fixed catalog). Unknown courses are reported back in the response under `warnings.unknown_courses` and ignored in the vector.
-
-### Step 1b — Project Grades → Capability Vector
-
-Graduation/term project titles are free-form (not a fixed catalog like courses), so `mapper.py` maintains a separate cache, `project_weights.json`. The first time a project title is seen, GPT-4o-mini infers its capability weights from the title/domain (e.g. an ML/CV project → AI-heavy weights) and persists them for future lookups. If `OPENAI_API_KEY` isn't set, unscored titles are reported under `warnings.unknown_projects`.
-
 ---
 
 ### Step 2 — ML Model (XGBoost)
 
-**Algorithm:** XGBoost Classifier (`multi:softprob`)
+**Algorithm:** XGBoost Classifier (`multi:softprob`)  
+**Training data:** 1,000 synthetic labeled student profiles  
 **Features (28 total):**
 
 ```
@@ -151,36 +131,24 @@ Graduation/term project titles are free-form (not a fixed catalog like courses),
 
 ### Step 3 — LLM Scoring (GPT-4o-mini)
 
-Four independent signals, each producing a `{track: score}` dict, combined via weighted average:
+Four independent signals, each producing a `{track: score}` dict:
 
-| Signal | Weight | Input | Method |
-|--------|-------|-------|--------|
-| Grades | 35% | course history + capability focus per course | Pattern reasoning over the *combination* of courses (not mechanical multiplication) |
-| Project | 30% | graduation/term project title(s) + grade | Self-chosen domain → strong intentional signal |
-| Competition | 20% | normalized problem/CTF types → proportions, scaled by rank/rating | `PROBLEM_TYPE_TRACK_MAP` reference + LLM reasoning |
-| Community | 15% | top upvoted comment | Semantic track mapping; zeroed if irrelevant to ML-recommended tracks |
+| Signal | Input | Method |
+|--------|-------|--------|
+| Community | comment text | Semantic track mapping |
+| Quiz | correct answer strings | NLU — concept extraction → track scores |
+| Problem solving | normalized platform tags → proportions | PROBLEM_TYPE_TRACK_MAP + LLM |
+| Grades | course history + context | Pattern reasoning (not mechanical multiplication) |
 
-Weighting rationale (see `get_llm_track_scores()` in `llm_scorer.py`):
-- **Grades (35%)** — broadest, most statistically reliable signal: many independent, already-validated data points across years.
-- **Project (30%)** — almost as reliable; usually a self-chosen domain, but typically just one or two data points.
-- **Competition (20%)** — objective and hard to fake, but optional/elective and thin for non-algorithmic tracks (HCI, Visual Computing, Comp Bio).
-- **Community (15%)** — useful confirmatory signal, but least structured and easiest to be noisy.
-
-Only signals that are actually provided are included, and weights are renormalized over what's present (in practice all four are required by the API).
-
----
-
-### Step 3b — Competition Rating Normalization
-
-`competition_rating` (optional) scales how much the problem-type signal is trusted:
+Signals are combined via **weighted average** — only provided signals are included:
 
 ```
-strength   = normalize_competition_rating(rating)   # 0–1, scaled per platform
-multiplier = 0.5 + 0.5 × strength                    # ranges 0.5x → 1.0x
-competition_score = problem_type_score × multiplier
+Default weights:
+  quiz:             25%
+  community:        25%
+  grades:           25%
+  problem_solving:  25%
 ```
-
-Known platform rating scales (`PLATFORM_RATING_SCALES`): Codeforces (800–3000), LeetCode (1200–3000), AtCoder (0–2800), TopCoder (900–3000). A generic `{"percentile": n}` is also accepted. If no rating is given, `strength` defaults to neutral (0.5) — the signal still uses problem-type proportions, just without rank amplification.
 
 ---
 
@@ -194,6 +162,8 @@ Fixed at **ML 40% / LLM 60%** because:
 ml_weight  = 0.40
 llm_weight = 0.60
 ```
+
+> When real student data is collected, this ratio should be re-evaluated based on which signal was more accurate.
 
 ---
 
@@ -210,31 +180,14 @@ Tracks below `final_score < 0.05` are filtered out.
 
 ---
 
-### Step 6 — Per-Track XAI Explanation
+### Step 6 — XAI Explanation
 
-For each recommended track (`explain_recommendation()` in `inference.py`):
-- **Summary** — why this track fits, in plain English
+Per track:
+- **Summary** — why this track fits in plain English
 - **Top capabilities** — student's strongest capabilities
 - **Top courses** — courses that contributed most
-- **Track fit** — required vs. student score per capability
-- **fit_warning** — surfaced separately in `routes.py` if any required capability (≥15% weight) is below 70% of its required value
-
-### Step 7 — Student-Facing XAI (GPT-generated)
-
-For the top recommendation only, `explain_recommendation_to_student()` in `llm_scorer.py` asks GPT-4o-mini to write a personalized, six-part explanation referencing the student's actual courses, project title, problem types/rank, and comment:
-
-```
-xai: {
-  "summary":      "...",
-  "grades":       "...",
-  "project":      "...",
-  "competition":  "...",
-  "comment":      "...",
-  "confidence":   "..."
-}
-```
-
-If the OpenAI call or JSON parsing fails, a safe generic fallback is returned instead.
+- **Track fit** — required vs student score per capability
+- **fit_warning** — if any required capability (≥15%) is missing
 
 ---
 
@@ -242,22 +195,10 @@ If the OpenAI call or JSON parsing fails, a safe generic fallback is returned in
 
 ```json
 {
-  "student_summary": {
-    "strengths": ["AI", "Math", "Data"],
-    "top_capability": "AI"
-  },
   "top_recommendation": {
     "track": "Artificial Intelligence",
     "score": 0.703,
-    "why": "You're recommended for the AI track because your AI and Math capabilities...",
-    "xai": {
-      "summary": "...",
-      "grades": "...",
-      "project": "...",
-      "competition": "...",
-      "comment": "...",
-      "confidence": "..."
-    }
+    "why": "You're recommended for the AI track because your AI and Math capabilities..."
   },
   "recommendations": [
     {
@@ -275,24 +216,15 @@ If the OpenAI call or JSON parsing fails, a safe generic fallback is returned in
     }
   ],
   "llm_track_scores": { "Artificial Intelligence": 0.853, ... },
+  "student_summary": { "strengths": ["AI", "Math", "Data"] },
   "meta": {
     "scoring_method": "soft_voting",
     "ml_weight": 0.4,
     "llm_weight": 0.6,
-    "llm_signals_used": ["community_comment", "project_grades", "competition_rank", "grades"]
-  },
-  "insights": {
-    "confidence_level": "High"
-  },
-  "warnings": {
-    "unknown_courses": [],
-    "unknown_projects": [],
-    "message": "Courses are ignored if not found in course_weights.json. Projects listed in 'unknown_projects' could not be auto-scored (e.g. OPENAI_API_KEY not set) and were ignored."
+    "llm_signals_used": ["community_comment", "quiz_answers", "problem_solving", "grades"]
   }
 }
 ```
-
-> `warnings` only appears if there are unknown courses or unscored projects.
 
 ### Key response fields
 
@@ -301,10 +233,9 @@ If the OpenAI call or JSON parsing fails, a safe generic fallback is returned in
 | `final_score` | Blended ML + LLM score (0–1) — used for ranking |
 | `ml_score` | ML model probability normalized to [0, 1] |
 | `llm_score` | Aggregated LLM signal score (0–1) |
-| `llm_promoted` | `true` if LLM ranked this track higher than ML (it wasn't in the ML top 3) |
+| `llm_promoted` | `true` if LLM ranked this track higher than ML |
 | `fit_warning` | Missing key capabilities for this track |
-| `top_recommendation.xai` | GPT-generated, student-facing explanation for the #1 track |
-| `confidence_level` | `"High"` if `final_score` > 0.35, else `"Low"` |
+| `confidence_level` | `"High"` if final_score > 0.35 |
 
 ---
 
@@ -328,7 +259,7 @@ Derived from Stanford CS Bulletin course descriptions. Each weight reflects the 
 ## 🔌 API Endpoints
 
 ### `POST /api/recommend`
-Main recommendation endpoint. Requires `grades` (or `capabilities`), `project_grades`, `competition_ranks`, and `top_comment`; accepts optional `competition_rating`.
+Main recommendation endpoint.
 
 ### `GET /api/courses`
 Returns all known courses and their capability weights.
@@ -340,20 +271,15 @@ Dynamically adds a new course by generating its weights via GPT-4o-mini.
 { "course_name": "Advanced Computer Vision" }
 ```
 
-> Project titles don't have a dedicated add endpoint — they're auto-scored the first time they appear in a `/api/recommend` request (see Step 1b) and cached in `project_weights.json`.
-
-### `GET /` and `GET /health`
-Basic liveness/health checks.
-
 ---
 
 ## 🛠️ Technologies
 
 - Python 3.13
-- Flask + Flask-CORS + Gunicorn
+- Flask + Gunicorn
 - XGBoost
 - Scikit-learn
-- NumPy / Pandas
+- NumPy
 - OpenAI API (GPT-4o-mini)
 - Railway (deployment)
 
@@ -362,27 +288,15 @@ Basic liveness/health checks.
 ## 📁 File Structure
 
 ```
-├── app.py                # Flask app entry point, CORS, health endpoints
-├── routes.py              # API endpoints + soft voting orchestration
-├── inference.py           # ML pipeline + soft_vote() + per-track XAI
-├── llm_scorer.py          # LLM signals: grades, project, competition, community
-├── mapper.py               # Grades/projects → capability vector conversion
-├── config.py               # Track profiles + capability definitions
-├── course_weights.json    # Course → capability weights (fixed catalog)
-├── project_weights.json   # Project title → capability weights (auto-generated, grows at runtime — not shipped)
-├── model.pkl              # Trained XGBoost model
-├── label_encoder.pkl      # Track label encoder
-├── Procfile                # Railway start command (gunicorn app:app)
-└── requirements.txt        # Dependencies
+├── app.py              # Flask app entry point
+├── routes.py           # API endpoints + soft voting orchestration
+├── inference.py        # ML pipeline + soft_vote() function
+├── llm_scorer.py       # LLM signals: community, quiz, problem solving, grades
+├── mapper.py           # Grades → capability vector conversion
+├── config.py           # Track profiles + capability definitions
+├── course_weights.json # Course → capability weights
+├── model.pkl           # Trained XGBoost model
+├── label_encoder.pkl   # Track label encoder
+├── Procfile            # Railway start command
+└── requirements.txt    # Dependencies
 ```
-
-> `model.pkl`/`label_encoder.pkl` are produced by a `training.py` script that isn't included in this snapshot — `inference.py` will raise a clear error on startup if they're missing.
-
----
-
-## ⚠️ Notes on Legacy Code
-
-`inference.py` and `llm_scorer.py` still expose a few functions not used by the active `/api/recommend` path — kept for backward compatibility / potential reuse:
-- `rerank_with_community()` — older community-reranking approach, superseded by the full soft-voting pipeline.
-- `explain_full_recommendation()` — a richer XAI bundle (rejected tracks, LLM influence, confidence breakdown, feature importance) not currently wired into the response.
-- `get_community_scores()` is also callable standalone outside the aggregate `get_llm_track_scores()` flow.

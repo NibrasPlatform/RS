@@ -6,8 +6,8 @@ np.random.seed(RANDOM_STATE)
 
 # ─── Single source of truth for capabilities ──────────────────────────────────
 CAPABILITIES = [
-    "Programming", "Algorithms", "Math", "Algorithms & Cryptography",
-    "Data", "Infrastructure & Security", "Hardware", "AI",
+    "Programming", "Algorithms", "Math", "Theory",
+    "Data", "Systems", "Hardware", "AI",
     "UX", "Security", "Graphics", "Biology"
 ]
 
